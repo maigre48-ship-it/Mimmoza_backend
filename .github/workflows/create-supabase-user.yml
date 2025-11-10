@@ -1,4 +1,4 @@
-      - name: Créer l’utilisateur dans Supabase
+      - name: Créer l’utilisateur (idempotent)
         env:
           SUPABASE_URL: ${{ env.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ env.SUPABASE_SERVICE_ROLE_KEY }}
@@ -9,34 +9,53 @@
         run: |
           set -euo pipefail
 
+          if [ -z "${NEW_USER_EMAIL:-}" ]; then
+            echo "Erreur: NEW_USER_EMAIL manquant."
+            exit 1
+          fi
           if [ -z "${NEW_USER_PASSWORD:-}" ]; then
-            echo "Erreur: Aucun mot de passe défini."
+            echo "Erreur: Aucun mot de passe défini (champ password vide et secret NEW_USER_PASSWORD absent)."
             exit 1
           fi
 
-          # Normaliser email_confirmed en booléen JSON (true/false)
-          EC="${EMAIL_CONFIRMED,,}"    # to lowercase
-          if [ "$EC" = "true" ]; then
-            EC=true
-          else
-            EC=false
+          # booléen JSON propre
+          EC="${EMAIL_CONFIRMED,,}"
+          if [ "$EC" = "true" ]; then EC=true; else EC=false; fi
+
+          echo "➡️ Endpoint: $SUPABASE_URL/auth/v1/admin/users"
+          echo "➡️ Email cible: $NEW_USER_EMAIL"
+
+          # 1) Vérifier si l'utilisateur existe déjà
+          get_resp=$(curl -s -w "\n%{http_code}" -G "$SUPABASE_URL/auth/v1/admin/users" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            --data-urlencode "email=$NEW_USER_EMAIL")
+
+          get_status=$(echo "$get_resp" | tail -n1)
+          get_body=$(echo "$get_resp" | sed '$d')
+          echo "GET /users?email=… → HTTP $get_status"
+
+          if [ "$get_status" = "200" ] && echo "$get_body" | grep -q '"email"'; then
+            echo "✅ L'utilisateur existe déjà, on ne recrée pas."
+            exit 0
           fi
 
-          # Construire le payload JSON sans heredoc
-          PAYLOAD=$(printf '{"email":"%s","password":"%s","email_confirm":%s}' \
+          # 2) Créer l'utilisateur sinon
+          payload=$(printf '{"email":"%s","password":"%s","email_confirm":%s}' \
             "$NEW_USER_EMAIL" "$NEW_USER_PASSWORD" "$EC")
 
-          echo "Création de l'utilisateur $NEW_USER_EMAIL ..."
+          echo "Création de l'utilisateur…"
           resp=$(curl -s -w "\n%{http_code}" -X POST "$SUPABASE_URL/auth/v1/admin/users" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            --data-raw "$PAYLOAD")
+            --data-raw "$payload")
 
           status=$(echo "$resp" | tail -n1)
           body=$(echo "$resp" | sed '$d')
 
-          echo "HTTP $status"
+          echo "POST /users → HTTP $status"
+          echo "Response:"
           echo "$body"
 
           if [ "$status" -ge 400 ]; then
@@ -44,4 +63,4 @@
             exit 1
           fi
 
-          echo "✅ Utilisateur créé avec succès sur Supabase."
+          echo "✅ Utilisateur créé avec succès."
