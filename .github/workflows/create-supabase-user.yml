@@ -1,4 +1,39 @@
-name: Créer l’utilisateur (idempotent)
+name: "Create Supabase User"
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: "Email du nouvel utilisateur"
+        required: true
+        default: "maigre48@gmail.com"
+      password:
+        description: "Mot de passe (laisser vide pour utiliser le secret NEW_USER_PASSWORD)"
+        required: false
+      email_confirmed:
+        description: "Marquer l'email comme confirmé ?"
+        required: false
+        default: "true"
+
+jobs:
+  create_user:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Préparer les variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SUPABASE_URL=https://fwvrqngbafqdaekbdfnm.supabase.co" >> $GITHUB_ENV
+          echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> $GITHUB_ENV
+          if [ -n "${{ github.event.inputs.password }}" ]; then
+            echo "NEW_USER_PASSWORD=${{ github.event.inputs.password }}" >> $GITHUB_ENV
+          else
+            echo "NEW_USER_PASSWORD=${{ secrets.NEW_USER_PASSWORD }}" >> $GITHUB_ENV
+          fi
+          echo "NEW_USER_EMAIL=${{ github.event.inputs.email }}" >> $GITHUB_ENV
+          echo "EMAIL_CONFIRMED=${{ github.event.inputs.email_confirmed }}" >> $GITHUB_ENV
+
+      - name: Créer l’utilisateur (idempotent)
         env:
           SUPABASE_URL: ${{ env.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ env.SUPABASE_SERVICE_ROLE_KEY }}
@@ -18,14 +53,11 @@ name: Créer l’utilisateur (idempotent)
             exit 1
           fi
 
-          # booléen JSON propre
-          EC="${EMAIL_CONFIRMED,,}"
-          if [ "$EC" = "true" ]; then EC=true; else EC=false; fi
+          EC="${EMAIL_CONFIRMED,,}"; if [ "$EC" = "true" ]; then EC=true; else EC=false; fi
 
           echo "➡️ Endpoint: $SUPABASE_URL/auth/v1/admin/users"
           echo "➡️ Email cible: $NEW_USER_EMAIL"
 
-          # 1) Vérifier si l'utilisateur existe déjà
           get_resp=$(curl -s -w "\n%{http_code}" -G "$SUPABASE_URL/auth/v1/admin/users" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
@@ -40,7 +72,6 @@ name: Créer l’utilisateur (idempotent)
             exit 0
           fi
 
-          # 2) Créer l'utilisateur sinon
           payload=$(printf '{"email":"%s","password":"%s","email_confirm":%s}' \
             "$NEW_USER_EMAIL" "$NEW_USER_PASSWORD" "$EC")
 
@@ -55,7 +86,6 @@ name: Créer l’utilisateur (idempotent)
           body=$(echo "$resp" | sed '$d')
 
           echo "POST /users → HTTP $status"
-          echo "Response:"
           echo "$body"
 
           if [ "$status" -ge 400 ]; then
