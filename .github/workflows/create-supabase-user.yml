@@ -1,42 +1,8 @@
-name: "Create Supabase User"
-
-on:
-  workflow_dispatch:
-    inputs:
-      email:
-        description: "Email du nouvel utilisateur"
-        required: true
-        default: "maigre48@gmail.com"
-      password:
-        description: "Mot de passe (laisser vide pour utiliser le secret NEW_USER_PASSWORD)"
-        required: false
-      email_confirmed:
-        description: "Marquer l'email comme confirmé ?"
-        required: false
-        default: "true"
-
-jobs:
-  create_user:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Préparer les variables
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "SUPABASE_URL=https://fwvrqngbafqdaekbdfnm.supabase.co" >> $GITHUB_ENV
-          echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> $GITHUB_ENV
-          if [ -n "${{ github.event.inputs.password }}" ]; then
-            echo "NEW_USER_PASSWORD=${{ github.event.inputs.password }}" >> $GITHUB_ENV
-          else
-            echo "NEW_USER_PASSWORD=${{ secrets.NEW_USER_PASSWORD }}" >> $GITHUB_ENV
-          fi
-          echo "NEW_USER_EMAIL=${{ github.event.inputs.email }}" >> $GITHUB_ENV
-          echo "EMAIL_CONFIRMED=${{ github.event.inputs.email_confirmed }}" >> $GITHUB_ENV
-
-      - name: Créer l’utilisateur (idempotent)
+name: Créer l’utilisateur (idempotent)
         env:
-          SUPABASE_URL: ${{ env.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ env.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_URL: https://fwvrqngbafqdaekbdfnm.supabase.co
+          # 👉 on injecte le secret directement ici (évite les soucis d'env vide)
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NEW_USER_EMAIL: ${{ env.NEW_USER_EMAIL }}
           NEW_USER_PASSWORD: ${{ env.NEW_USER_PASSWORD }}
           EMAIL_CONFIRMED: ${{ env.EMAIL_CONFIRMED }}
@@ -44,25 +10,31 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Garde-fous
+          if [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            echo "❌ Secret SUPABASE_SERVICE_ROLE_KEY manquant (vide à l'exécution). Vérifie le repository secret."
+            exit 1
+          fi
           if [ -z "${NEW_USER_EMAIL:-}" ]; then
-            echo "Erreur: NEW_USER_EMAIL manquant."
+            echo "❌ NEW_USER_EMAIL manquant."
             exit 1
           fi
           if [ -z "${NEW_USER_PASSWORD:-}" ]; then
-            echo "Erreur: Aucun mot de passe défini (champ password vide et secret NEW_USER_PASSWORD absent)."
+            echo "❌ Aucun mot de passe défini (champ password vide et secret NEW_USER_PASSWORD absent)."
             exit 1
           fi
 
+          # booléen JSON propre
           EC="${EMAIL_CONFIRMED,,}"; if [ "$EC" = "true" ]; then EC=true; else EC=false; fi
 
           echo "➡️ Endpoint: $SUPABASE_URL/auth/v1/admin/users"
           echo "➡️ Email cible: $NEW_USER_EMAIL"
 
+          # 1) GET: existe déjà ?
           get_resp=$(curl -s -w "\n%{http_code}" -G "$SUPABASE_URL/auth/v1/admin/users" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             --data-urlencode "email=$NEW_USER_EMAIL")
-
           get_status=$(echo "$get_resp" | tail -n1)
           get_body=$(echo "$get_resp" | sed '$d')
           echo "GET /users?email=… → HTTP $get_status"
@@ -72,6 +44,7 @@ jobs:
             exit 0
           fi
 
+          # 2) POST: créer
           payload=$(printf '{"email":"%s","password":"%s","email_confirm":%s}' \
             "$NEW_USER_EMAIL" "$NEW_USER_PASSWORD" "$EC")
 
@@ -81,7 +54,6 @@ jobs:
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
             --data-raw "$payload")
-
           status=$(echo "$resp" | tail -n1)
           body=$(echo "$resp" | sed '$d')
 
