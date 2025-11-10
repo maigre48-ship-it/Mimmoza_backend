@@ -1,5 +1,5 @@
 name: Créer l’utilisateur (idempotent)
-        env:
+        
           SUPABASE_URL: https://fwvrqngbafqdaekbdfnm.supabase.co
           # 👉 on injecte le secret directement ici (évite les soucis d'env vide)
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
