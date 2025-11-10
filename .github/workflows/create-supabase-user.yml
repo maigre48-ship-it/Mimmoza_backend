@@ -1,4 +1,4 @@
-      - name: Créer l’utilisateur (idempotent)
+name: Créer l’utilisateur (idempotent)
         env:
           SUPABASE_URL: ${{ env.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ env.SUPABASE_SERVICE_ROLE_KEY }}
