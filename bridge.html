@@ -1,6 +1,8 @@
 // C:\Mimmoza\supabase\functions\auth-bridge\index.ts
-Deno.serve(() =>
-  new Response("OK", {
+import { serve } from "https://deno.land/std@0.131.0/http/server.ts";
+
+serve((_req: Request) => {
+  return new Response("OK - auth-bridge up", {
     headers: { "content-type": "text/plain; charset=utf-8" },
-  })
-);
+  });
+});
