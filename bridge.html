@@ -6,3 +6,15 @@ serve((_req: Request) => {
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 });
+import { serve } from "https://deno.land/std@0.131.0/http/server.ts";
+
+serve((_req: Request) => {
+  try {
+    return new Response("OK - verbose test", {
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  } catch (e) {
+    console.error(e);
+    return new Response("ERR: " + (e?.message ?? String(e)), { status: 500 });
+  }
+});
