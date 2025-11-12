@@ -1,65 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-serve(() => {
-  const html = `<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8" />
-  <title>Mimmoza → Base44 Auth Bridge</title>
-  <style>
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
-      padding: 24px;
-      background: #f7f8fa;
-      color: #222;
-    }
-    h1 { font-size: 1.5rem; }
-    button {
-      padding: 0.6rem 1rem;
-      border: 0;
-      border-radius: 8px;
-      background: #2563eb;
-      color: #fff;
-      cursor: pointer;
-      font-weight: 500;
-    }
-    pre {
-      background: #eef2f7;
-      padding: 12px;
-      border-radius: 6px;
-      word-break: break-all;
-    }
-  </style>
-</head>
-
-<body>
-  <h1>✅ Mimmoza → Base44 Auth Bridge</h1>
-  <p>Cette page confirme que la fonction <strong>auth-bridge</strong> est bien déployée et accessible.</p>
-
-  <p>Prochaine étape : ajouter la logique de connexion Supabase.</p>
-
-  <hr />
-  <p>
-    <button onclick="testMessage()">Tester le postMessage vers Base44</button>
-  </p>
-
-  <script>
-    function testMessage() {
-      // ⚠️ Remplace cette URL par l'origine exacte de ton app Base44
-      const targetOrigin = "https://app.mimmoza.base44.com";
-      const fakeData = {
-        type: "SUPABASE_JWT",
-        token: "fake-jwt-for-test",
-        email: "test@example.com",
-      };
-      window.opener?.postMessage(fakeData, targetOrigin);
-      alert("Message test envoyé à Base44 → vérifie la console de ton app.");
-    }
-  </script>
-</body>
-</html>`;
-
-  return new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-});
+serve(() =>
+  new Response("OK — auth-bridge up", {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  })
+);
