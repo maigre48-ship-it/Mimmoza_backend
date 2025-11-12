@@ -4,39 +4,120 @@
     <meta charset="utf-8" />
     <title>Mimmoza Auth Bridge</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        max-width: 560px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+      .muted { color: #666; }
+      button, input {
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 10px;
+      }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: #fafafa;
+        border: 1px solid #eee;
+        padding: 10px;
+        border-radius: 8px;
+      }
+    </style>
   </head>
   <body>
     <h1>Mimmoza → Base44 Auth Bridge</h1>
-    <p>Connexion Supabase en cours…</p>
+    <p class="muted">Connecte-toi à Supabase puis envoie le JWT à ton app Base44 via <code>postMessage</code>.</p>
+
+    <div id="status" class="muted">Chargement…</div>
+
+    <div id="login" style="display:none">
+      <div class="row">
+        <input id="email" type="email" placeholder="email@exemple.com" />
+        <button id="magic">Lien magique</button>
+      </div>
+      <div class="row">
+        <button id="google">Connexion Google</button>
+        <button id="github">Connexion GitHub</button>
+      </div>
+    </div>
+
+    <div id="session" style="display:none">
+      <div class="row">
+        <button id="send">Envoyer le JWT à Base44</button>
+        <button id="logout">Se déconnecter</button>
+      </div>
+      <h3>JWT (debug temporaire)</h3>
+      <pre id="jwtBox">(sera affiché après connexion)</pre>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
-      // ⚙️ À personnaliser :
-      const SUPABASE_URL = "https://<ton-projet>.supabase.co";
-      const SUPABASE_ANON = "<ta_anon_key>";
-      const PARENT_ORIGIN = "https://app.mabase44.com"; // domaine de ton app Base44
+      // --- CONFIGURATION ---
+      const SUPABASE_URL  = "https://fwvrqngbafqdaekbdfnm.supabase.co";
+      const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3dnJxbmdiYWZxZGFla2JkZm5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI2Njg1NzgsImV4cCI6MjA3ODI0NDU3OH0.cpgjWVBnXXjD5uL4yOT1xxdf1W8bQrGA04TlggHvS9o";
+      const PARENT_ORIGIN = "https://mimmoza.base44.app";
 
       const { createClient } = supabase;
       const client = createClient(SUPABASE_URL, SUPABASE_ANON);
 
-      (async () => {
-        // Vérifie si l'utilisateur est connecté
+      const el = (id) => document.getElementById(id);
+      const $status = el("status"), $login = el("login"), $session = el("session"), $jwtBox = el("jwtBox");
+
+      async function refresh() {
         const { data: { session } } = await client.auth.getSession();
         if (!session) {
-          document.body.innerHTML = "<p>Utilisateur non connecté à Supabase.</p>";
+          $status.textContent = "Non connecté";
+          $login.style.display = "";
+          $session.style.display = "none";
           return;
         }
+        $status.textContent = `Connecté : ${session.user.email}`;
+        $login.style.display = "none";
+        $session.style.display = "";
+        $jwtBox.textContent = session.access_token;
+      }
 
-        const jwt = session.access_token;
+      // --- Login par lien magique ---
+      el("magic").onclick = async () => {
+        const email = el("email").value.trim();
+        if (!email) return alert("Saisis un email.");
+        const { error } = await client.auth.signInWithOtp({
+          email,
+          options: { emailRedirectTo: location.href }
+        });
+        if (error) alert(error.message);
+        else $status.textContent = "Lien magique envoyé 👌 Vérifie ta boîte mail.";
+      };
 
-        // ✅ envoi sécurisé du token JWT à Base44
-        window.parent.postMessage(
-          { type: "SUPABASE_JWT", jwt },
-          PARENT_ORIGIN
-        );
+      // --- OAuth Google / GitHub ---
+      el("google").onclick = async () => {
+        await client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.href }});
+      };
+      el("github").onclick = async () => {
+        await client.auth.signInWithOAuth({ provider: 'github', options: { redirectTo: location.href }});
+      };
 
-        document.body.innerHTML = "<p>✅ Token envoyé à Base44 !</p>";
-      })();
+      // --- Déconnexion ---
+      el("logout").onclick = async () => {
+        await client.auth.signOut();
+        $jwtBox.textContent = "";
+        refresh();
+      };
+
+      // --- Envoi du JWT à Base44 ---
+      el("send").onclick = async () => {
+        const { data: { session } } = await client.auth.getSession();
+        if (!session) return alert("Pas de session active.");
+        window.parent.postMessage({ type: "SUPABASE_JWT", jwt: session.access_token }, PARENT_ORIGIN);
+        $status.textContent = "✅ JWT envoyé à Base44 (" + PARENT_ORIGIN + ")";
+      };
+
+      client.auth.onAuthStateChange((_event, _session) => refresh());
+      refresh();
     </script>
   </body>
 </html>
