@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mimmoza Auth Bridge</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <h1>Mimmoza → Base44 Auth Bridge</h1>
+    <p>Connexion Supabase en cours…</p>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+      // ⚙️ À personnaliser :
+      const SUPABASE_URL = "https://<ton-projet>.supabase.co";
+      const SUPABASE_ANON = "<ta_anon_key>";
+      const PARENT_ORIGIN = "https://app.mabase44.com"; // domaine de ton app Base44
+
+      const { createClient } = supabase;
+      const client = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+      (async () => {
+        // Vérifie si l'utilisateur est connecté
+        const { data: { session } } = await client.auth.getSession();
+        if (!session) {
+          document.body.innerHTML = "<p>Utilisateur non connecté à Supabase.</p>";
+          return;
+        }
+
+        const jwt = session.access_token;
+
+        // ✅ envoi sécurisé du token JWT à Base44
+        window.parent.postMessage(
+          { type: "SUPABASE_JWT", jwt },
+          PARENT_ORIGIN
+        );
+
+        document.body.innerHTML = "<p>✅ Token envoyé à Base44 !</p>";
+      })();
+    </script>
+  </body>
+</html>
+
