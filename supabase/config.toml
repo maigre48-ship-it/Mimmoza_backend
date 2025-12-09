@@ -1,0 +1,115 @@
+[functions.smartscore-report-v1]
+verify_jwt = false
+
+[functions.smartscore-enriched-v2]
+verify_jwt = false
+
+[functions.smartscore-unified-v1]
+enabled = true
+verify_jwt = true
+import_map = "./functions/smartscore-unified-v1/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/smartscore-unified-v1/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/smartscore-unified-v1/*.html" ]
+
+[functions.smartscore-agent-v1]
+enabled = true
+verify_jwt = true
+import_map = "./functions/smartscore-agent-v1/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/smartscore-agent-v1/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/smartscore-agent-v1/*.html" ]
+
+[functions.smartscore-enriched-v3]
+enabled = true
+verify_jwt = true
+import_map = "./functions/smartscore-enriched-v3/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/smartscore-enriched-v3/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/smartscore-enriched-v3/*.html" ]
+
+[functions.plu-universal-parser]
+enabled = true
+verify_jwt = true
+import_map = "./functions/plu-universal-parser/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/plu-universal-parser/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/plu-universal-parser/*.html" ]
+
+[functions.plu-from-address]
+enabled = true
+verify_jwt = true
+import_map = "./functions/plu-from-address/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/plu-from-address/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/plu-from-address/*.html" ]
+
+[functions.plu-from-parcelle]
+enabled = true
+verify_jwt = true
+import_map = "./functions/plu-from-parcelle/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/plu-from-parcelle/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/plu-from-parcelle/*.html" ]
+
+[functions.plu-ingest-rulesets]
+enabled = true
+verify_jwt = true
+import_map = "./functions/plu-ingest-rulesets/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/plu-ingest-rulesets/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/plu-ingest-rulesets/*.html" ]
+
+[functions.parcelle-from-id]
+enabled = true
+verify_jwt = true
+import_map = "./functions/parcelle-from-id/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/parcelle-from-id/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/parcelle-from-id/*.html" ]
+
+[functions.plu-extract-ruleset]
+enabled = true
+verify_jwt = true
+import_map = "./functions/plu-extract-ruleset/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/plu-extract-ruleset/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/plu-extract-ruleset/*.html" ]
+
+[functions.plu-extract-article-v1]
+enabled = true
+verify_jwt = true
+import_map = "./functions/plu-extract-article-v1/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/plu-extract-article-v1/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/plu-extract-article-v1/*.html" ]

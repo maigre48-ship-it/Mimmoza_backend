@@ -1,0 +1,30 @@
+# Node
+node_modules/
+
+# Données énormes à ne pas versionner
+Cadastre/
+DVF_chunks/
+DVF_chunks_20k/
+DVF_chunks_small/
+dvf/
+parsed/
+PLU/
+PLU zonages/
+Transport Ile-de-France/
+Nomenclature BPE/
+Equipements/
+Education nationale/
+Insee population/
+SOURCES DATA/
+valeursfoncieres-2025-s1/
+valeursfoncieres-2025-s1.zip*
+*.zip
+
+# Sorties temporaires
+*.bak
+
+# local Supabase
+supabase/.branches
+supabase/.temp
+supabase/.types
+supabase/.env
