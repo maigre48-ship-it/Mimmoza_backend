@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mimmoza Auth Bridge (v2)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
+      .muted { color:#666 }
+      button, input { padding:10px 12px; border:1px solid #ddd; border-radius:10px; }
+      .row { display:flex; gap:10px; flex-wrap:wrap; margin:10px 0; }
+      pre { white-space: pre-wrap; word-break: break-all; background:#fafafa; border:1px solid #eee; padding:10px; border-radius:8px; }
+      .log { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background:#0b1020; color:#d6e0ff; padding:12px; border-radius:8px; min-height: 60px; }
+      .ok { color:#0a7b00 }
+      .warn { color:#b36b00 }
+      .err { color:#b30021 }
+    </style>
+  </head>
+  <body>
+    <h1>Mimmoza → Base44 Auth Bridge <small>(v2)</small></h1>
+    <p class="muted">Connecte-toi à Supabase puis envoie le JWT à Base44 via <code>postMessage</code>.</p>
+
+    <p><b>Statut :</b> <span id="status">Boot…</span></p>
+    <div class="log" id="log"></div>
+
+    <div id="login" style="display:none">
+      <div class="row">
+        <input id="email" type="email" placeholder="email@exemple.com" />
+        <button id="magic">Lien magique</button>
+      </div>
+      <div class="row">
+        <button id="google">Connexion Google</button>
+        <button id="github">Connexion GitHub</button>
+      </div>
+    </div>
+
+    <div id="session" style="display:none">
+      <p class="ok">✅ Connecté</p>
+      <div class="row">
+        <button id="send">Envoyer le JWT à Base44</button>
+        <button id="logout">Se déconnecter</button>
+      </div>
+      <h3>JWT (debug)</h3>
+      <pre id="jwtBox">(sera affiché après connexion)</pre>
+    </div>
+
+    <script>
+      // --- CONFIG (tes valeurs) ---
+      const SUPABASE_URL  = "https://fwvrqngbafqdaekbdfnm.supabase.co";
+      const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3dnJxbmdiYWZxZGFla2JkZm5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI2Njg1NzgsImV4cCI6MjA3ODI0NDU3OH0.cpgjWVBnXXjD5uL4yOT1xxdf1W8bQrGA04TlggHvS9o";
+      const PARENT_ORIGIN = "https://mimmoza.base44.app"; // sans slash final
+
+      // --- Helpers UI/log ---
+      const $ = (id) => document.getElementById(id);
+      const log = (msg, cls="") => { const l = $("log"); const p = document.createElement("div"); p.className=cls; p.textContent=msg; l.appendChild(p); console.log(msg); };
+      const setStatus = (t)=> $("status").textContent = t;
+
+      // --- Multi-CDN loader pour supabase-js ---
+      (async () => {
+        setStatus("Chargement du SDK Supabase…");
+        const cdns = [
+          "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2",
+          "https://unpkg.com/@supabase/supabase-js@2",
+          "https://esm.sh/@supabase/supabase-js@2"
+        ];
+        let ok = false;
+        for (const src of cdns) {
+          try {
+            log("→ tentative chargement: " + src);
+            await new Promise((resolve, reject) => {
+              const s = document.createElement("script");
+              s.src = src;
+              s.async = true;
+              s.onload = resolve;
+              s.onerror = reject;
+              document.head.appendChild(s);
+            });
+            if (window.supabase && window.supabase.createClient) {
+              log("✔ SDK chargé depuis: " + src, "ok");
+              ok = true;
+              break;
+            } else {
+              log("⚠ SDK chargé mais 'supabase.createClient' absent", "warn");
+            }
+          } catch (e) {
+            log("✖ échec de chargement: " + src, "err");
+          }
+        }
+        if (!ok) {
+          setStatus("Échec chargement SDK (bloqué par extension ?)");
+          log("Désactive temporairement ton bloqueur de scripts et recharge.", "err");
+          return;
+        }
+
+        const { createClient } = window.supabase;
+        const client = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+        const $login = $("login"), $session = $("session"), $jwtBox = $("jwtBox");
+
+        async function refresh() {
+          try {
+            setStatus("Lecture session…");
+            const { data: { session }, error } = await client.auth.getSession();
+            if (error) { log("getSession error: " + (error.message||error), "err"); }
+            if (!session) {
+              setStatus("Non connecté");
+              $login.style.display = "";
+              $session.style.display = "none";
+              return;
+            }
+            setStatus("Connecté: " + (session.user?.email || "(sans email)"));
+            $login.style.display = "none";
+            $session.style.display = "";
+            $jwtBox.textContent = session.access_token;
+          } catch (e) {
+            log("refresh() failed: " + (e.message||e), "err");
+            setStatus("Non connecté (mode secours)");
+            $login.style.display = "";
+            $session.style.display = "none";
+          }
+        }
+
+        // Actions UI
+        $("magic").onclick = async () => {
+          const email = $("email").value.trim();
+          if (!email) return alert("Saisis un email.");
+          const { error } = await client.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.href }});
+          if (error) alert(error.message);
+          else setStatus("Lien magique envoyé 👌 Vérifie tes mails.");
+        };
+        $("google").onclick = async () => {
+          await client.auth.signInWithOAuth({ provider:"google", options:{ redirectTo: location.href }});
+        };
+        $("github").onclick = async () => {
+          await client.auth.signInWithOAuth({ provider:"github", options:{ redirectTo: location.href }});
+        };
+        $("logout").onclick = async () => {
+          await client.auth.signOut();
+          $jwtBox.textContent = "";
+          refresh();
+        };
+        $("send").onclick = async () => {
+          const { data: { session } } = await client.auth.getSession();
+          if (!session) return alert("Pas de session active.");
+          window.parent.postMessage({ type:"SUPABASE_JWT", jwt: session.access_token }, PARENT_ORIGIN);
+          setStatus("✅ JWT envoyé à Base44 (" + PARENT_ORIGIN + ")");
+          log("postMessage → " + PARENT_ORIGIN, "ok");
+        };
+
+        client.auth.onAuthStateChange(() => { log("onAuthStateChange"); refresh(); });
+        await refresh();
+      })();
+    </script>
+  </body>
+</html>

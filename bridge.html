@@ -1,0 +1,61 @@
+// 🌉 Mimmoza → Base44 Auth Bridge
+// Fichier : C:\Mimmoza\supabase\functions\auth-bridge\index.ts
+import { serve } from "https://deno.land/std@0.131.0/http/server.ts";
+
+const SUPABASE_URL = "https://fwvrqngbafqdaekbdfnm.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3dnJxbmdiYWZxZGFla2JkZm5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI2Njg1NzgsImV4cCI6MjA3ODI0NDU3OH0.cpgjWVBnXXjD5uL4yOT1xxdf1W8bQrGA04TlggHvS9o";
+const TARGET_ORIGIN = "https://app.mimmoza.base44.com"; // ← remplace par l’origine EXACTE de ton app Base44
+
+serve(() => {
+  const html = `<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Mimmoza → Base44 Auth Bridge</title>
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, Arial; padding: 24px; background: #f7f8fa; color: #222; }
+    button { padding: .6rem 1rem; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; font-weight: 500; }
+    pre { background: #eef2f7; padding: 12px; border-radius: 6px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h2>Mimmoza → Base44 Auth Bridge</h2>
+  <p>Connecte-toi à Supabase puis envoie le JWT à ton app Base44 via postMessage.</p>
+
+  <p id="status">Chargement…</p>
+  <p><button id="send">Envoyer le JWT à Base44</button></p>
+
+  <h3>JWT (debug temporaire)</h3>
+  <pre id="jwt-debug">(chargement…)</pre>
+
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+    const supabase = createClient("${SUPABASE_URL}", "${SUPABASE_ANON_KEY}");
+    const jwtEl = document.getElementById("jwt-debug");
+    const statusEl = document.getElementById("status");
+
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (session?.user) {
+      statusEl.textContent = "Connecté : " + (session.user.email || session.user.id);
+      jwtEl.textContent = session.access_token;
+    } else {
+      statusEl.textContent = "Non connecté — utilise ton lien magique Supabase puis recharge la page";
+      jwtEl.textContent = "";
+    }
+
+    document.getElementById("send").addEventListener("click", () => {
+      const jwt = jwtEl.textContent.trim();
+      if (!jwt) return alert("Pas de JWT détecté !");
+      window.opener?.postMessage(
+        { type: "SUPABASE_JWT", token: jwt, email: session?.user?.email || "" },
+        "${TARGET_ORIGIN}"
+      );
+      alert("✅ JWT envoyé à Base44 !");
+    });
+  </script>
+</body>
+</html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+});
