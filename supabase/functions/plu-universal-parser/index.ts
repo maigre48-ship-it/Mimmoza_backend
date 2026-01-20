@@ -41,11 +41,36 @@ Tu dois produire un JSON STRICTEMENT au format suivant :
   "zone_code": "...",
   "zone_libelle": "...",
   "plu_version_label": "...",
-  "densite": { "cos_existe": true/false, "cos_max": number|null, "max_sdp_m2_par_m2_terrain": number|null, "commentaire": "..." },
-  "hauteur": { "hauteur_max_m": number|null, "hauteur_min_m": number|null, "commentaire": "..." },
-  "emprise_sol": { "emprise_sol_max": number|null, "commentaire": "..." },
-  "reculs_alignements": { "commentaire": "..." },
-  "stationnement": { "commentaire": "..." },
+  "densite": {
+    "cos_existe": true/false,
+    "cos_max": number|null,
+    "max_sdp_m2_par_m2_terrain": number|null,
+    "commentaire": "..."
+  },
+  "hauteur": {
+    "hauteur_max_m": number|null,
+    "hauteur_min_m": number|null,
+    "commentaire": "..."
+  },
+  "emprise_sol": {
+    "emprise_sol_max": number|null,
+    "commentaire": "..."
+  },
+  "reculs": {
+    "retrait_min_m": number|null,
+    "retrait_voirie_min_m": number|null,
+    "retrait_limites_separatives_min_m": number|null,
+    "retrait_fond_parcelle_min_m": number|null,
+    "commentaire": "..."
+  },
+  "reculs_alignements": {
+    "commentaire": "..."
+  },
+  "stationnement": {
+    "places_par_logement": number|null,
+    "surface_par_place_m2": number|null,
+    "commentaire": "..."
+  },
   "autres_regles": { "commentaire": "..." },
   "articles_source": ["..."]
 }
@@ -55,9 +80,18 @@ Règles :
 - Si une info n'est pas dans le texte, mets null ou cos_existe=false.
 - S'il y a plusieurs hauteurs possibles (par exemple : une règle générale et des cas particuliers ou dérogations),
   mets dans "hauteur_max_m" la HAUTEUR GÉNÉRALE applicable à la majorité des cas,
-  et décris les cas particuliers (ex : angle de rue, linéaire spécifique, équipements publics) uniquement dans le commentaire.
-- De même, pour "emprise_sol_max", mets la règle générale (par exemple 0.6 pour 60%)
-  et décris les dérogations (par exemple 0.7 pour certains équipements) dans le commentaire sans modifier la valeur générale.
+  et décris les cas particuliers uniquement dans le commentaire.
+- Pour "emprise_sol_max", mets la règle générale (par exemple 0.6 pour 60%)
+  et décris les dérogations dans le commentaire sans modifier la valeur générale.
+- Pour les RECULS :
+  - Essaie de donner les distances en mètres dans "reculs.*_m" quand le texte le permet.
+  - "retrait_min_m" = recul général minimal, si une règle générale existe.
+  - Utilise les champs spécifiques (voirie / limites séparatives / fond de parcelle) quand c'est mentionné.
+  - Mets les cas particuliers détaillés uniquement dans "reculs.commentaire".
+- Pour le STATIONNEMENT :
+  - "places_par_logement" = règle générale pour les logements ordinaires.
+  - "surface_par_place_m2" = surface indicative (place + manoeuvres), utilise 25 m² si le texte ne la donne pas.
+  - Mets les règles spécifiques (commerces, bureaux, etc.) dans "stationnement.commentaire".
 - "articles_source" doit contenir les articles que tu as réellement utilisés (ex : "UG.6", "UG.7").
 - Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.
 `;
@@ -140,7 +174,6 @@ serve(async (req) => {
         );
       }
 
-      // On s'assure que les champs clés sont présents
       jsonResult = {
         ...extracted_json,
         commune_insee: extracted_json.commune_insee ?? commune_insee,
@@ -155,8 +188,6 @@ serve(async (req) => {
         .from("plu_text_chunks")
         .select("page_number, section_label, raw_text, zone_code")
         .eq("source_id", source_id)
-        // on prend soit les chunks avec zone_code = zone_code,
-        // soit les chunks où zone_code est NULL (pour compat v1)
         .or(`zone_code.is.null,zone_code.eq.${zone_code}`)
         .order("page_number", { ascending: true });
 
@@ -181,7 +212,6 @@ serve(async (req) => {
         zone_code,
       });
 
-      // On s'assure aussi ici que les champs clés sont bien renseignés
       jsonResult = {
         ...llmJson,
         commune_insee: llmJson.commune_insee ?? commune_insee,
@@ -212,7 +242,7 @@ serve(async (req) => {
 
     // -----------------------------------------------------
     // 4) Normalisation vers plu_rulesets (UPSERT)
-// -----------------------------------------------------
+    // -----------------------------------------------------
     const d: any = jsonResult;
 
     const rulesetPayload = {
@@ -241,8 +271,21 @@ serve(async (req) => {
       emprise_sol_max: d.emprise_sol?.emprise_sol_max ?? null,
       emprise_commentaire: d.emprise_sol?.commentaire ?? null,
 
-      reculs_commentaire: d.reculs_alignements?.commentaire ?? null,
+      // 🔹 Reculs numériques
+      retrait_min_m: d.reculs?.retrait_min_m ?? null,
+      retrait_voirie_min_m: d.reculs?.retrait_voirie_min_m ?? null,
+      retrait_limites_separatives_min_m:
+        d.reculs?.retrait_limites_separatives_min_m ?? null,
+      retrait_fond_parcelle_min_m:
+        d.reculs?.retrait_fond_parcelle_min_m ?? null,
+      reculs_commentaire:
+        d.reculs?.commentaire ?? d.reculs_alignements?.commentaire ?? null,
+
+      // 🔹 Stationnement chiffré
+      places_par_logement: d.stationnement?.places_par_logement ?? null,
+      surface_par_place_m2: d.stationnement?.surface_par_place_m2 ?? null,
       stationnement_commentaire: d.stationnement?.commentaire ?? null,
+
       autres_commentaires: d.autres_regles?.commentaire ?? null,
 
       raw_rules: jsonResult,

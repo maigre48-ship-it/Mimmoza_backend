@@ -13,5 +13,16 @@
   "dependencies": {
     "node-fetch": "^2.7.0",
     "pg": "^8.16.3"
-  }
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maigre48-ship-it/Mimmoza_backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/maigre48-ship-it/Mimmoza_backend/issues"
+  },
+  "homepage": "https://github.com/maigre48-ship-it/Mimmoza_backend#readme"
 }

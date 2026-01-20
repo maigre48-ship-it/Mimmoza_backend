@@ -113,3 +113,49 @@ entrypoint = "./functions/plu-extract-article-v1/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/plu-extract-article-v1/*.html" ]
+[functions.plu-from-parcelle-v2]
+verify_jwt = false
+
+[functions.cadastre-from-commune]
+enabled = true
+verify_jwt = true
+import_map = "./functions/cadastre-from-commune/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/cadastre-from-commune/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/cadastre-from-commune/*.html" ]
+
+[functions.bpe-proxy]
+enabled = true
+verify_jwt = true
+import_map = "./functions/bpe-proxy/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/bpe-proxy/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/bpe-proxy/*.html" ]
+
+[functions.risques-v1]
+enabled = true
+verify_jwt = true
+import_map = "./functions/risques-v1/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/risques-v1/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/risques-v1/*.html" ]
+
+[functions.terrain-analysis-v1]
+enabled = true
+verify_jwt = true
+import_map = "./functions/terrain-analysis-v1/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/terrain-analysis-v1/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/terrain-analysis-v1/*.html" ]

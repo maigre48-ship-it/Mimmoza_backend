@@ -1,352 +1,473 @@
 // supabase/functions/promoteur-from-parcelle/index.ts
-// Version : promoteur-from-parcelle-v1
+// Version logique : v3 étendue (géométrie + règles riches)
 //
 // Objectif :
-//  - Entrée : parcel_id (+ commune_insee et surface_terrain_m2 optionnels)
-//  - Étapes :
-//      1) Lire la parcelle dans le cache / BD
-//      2) Lire les règles PLU pour la parcelle (zone + règles)
-//      3) Appeler la fonction SQL promoteur_v1(input jsonb)
-//  - Sortie : { success, inputs, parcel, plu, promoteur, error }
+//  - Entrée : JSON du type
+//      {
+//        parcel_id?: string;
+//        commune_insee?: string;
+//        surface_terrain_m2?: number;
+//        parcel_geojson?: object;
+//        parcel?: object;
+//      }
 //
-// Dépendances :
-//  - @supabase/supabase-js v2
-//  - ../_shared/cors.ts
+//  - Stratégie PLU :
+//      1) Si commune_insee + parcel_geojson -> RPC get_plu_rules_for_geom_v1
+//      2) Sinon si parcel_id                -> RPC get_plu_rules_for_parcelle_v2
+//         ✅ + RETRY geom si PLU_ZONE_NOT_FOUND et geometry disponible dans la réponse
+//
+//  - Sortie :
+//      {
+//        success: boolean;
+//        version: "promoteur-from-parcelle-v3";
+//        inputs: {...};
+//        parcel: {...} | null;
+//        plu: {...} | null;
+//        promoteur: {...} | null;
+//        massing: {...};
+//        error?: { code: string; message?: string; details?: any };
+//      }
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 
-// -------------------------------------------------
-// Types
-// -------------------------------------------------
-
-type PromoteurFromParcelRequest = {
-  parcel_id: string;
-  commune_insee?: string | null;
-  surface_terrain_m2?: number | null;
-};
-
-type ParcelRecord = {
-  parcel_id: string;
-  commune_insee: string | null;
-  surface_terrain_m2: number | null;
-  [key: string]: unknown;
-};
-
-type PluZoneInfo = {
-  zone_code: string;
-  zone_libelle: string | null;
-};
-
-type PluRuleset = {
-  [key: string]: unknown;
-};
-
-type PluForParcelResult = {
-  zone: PluZoneInfo | null;
-  found: boolean;
-  rules?: PluRuleset | null;
-  source?: Record<string, unknown> | null;
-};
-
-type PromoteurBilan = {
-  success: boolean;
-  version?: string;
-  appreciation?: string;
-  bilan?: unknown;
-  error?: string;
-  [key: string]: unknown;
-};
-
-type PromoteurFromParcelResponse = {
-  success: boolean;
-  version: "promoteur-from-parcelle-v1";
-  inputs: {
-    parcel_id: string;
-    commune_insee?: string | null;
-    surface_terrain_m2?: number | null;
-  };
-  parcel?: ParcelRecord | null;
-  plu?: PluForParcelResult | null;
-  promoteur?: PromoteurBilan | null;
-  error?: string;
-  details?: unknown;
-};
-
-// -------------------------------------------------
-// Supabase client
-// -------------------------------------------------
-
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
-});
+type Json = Record<string, unknown>;
 
-// -------------------------------------------------
-// Helpers Response
-// -------------------------------------------------
+/**
+ * Enrichit les règles PLU de manière sûre :
+ *  - on ne touche PAS aux reculs (le PLU est source de vérité),
+ *  - on ajoute seulement des valeurs par défaut pour le stationnement si absent.
+ */
+function enrichPluRules(plu: any): any {
+  if (!plu) return plu;
 
-function jsonResponse(body: PromoteurFromParcelResponse): Response {
-  return new Response(JSON.stringify(body, null, 2), {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...corsHeaders,
-    },
-  });
-}
+  const originalRules: any = plu.rules ?? {};
 
-function badRequest(
-  message: string,
-  extra: Partial<PromoteurFromParcelResponse> = {},
-) {
-  return jsonResponse({
-    success: false,
-    version: "promoteur-from-parcelle-v1",
-    inputs: extra.inputs ?? {
-      parcel_id: "",
-      commune_insee: null,
-      surface_terrain_m2: null,
-    },
-    ...extra,
-    error: message,
-  } as PromoteurFromParcelResponse);
-}
-
-// -------------------------------------------------
-// 1) Lire parcelle depuis cache
-// -------------------------------------------------
-
-async function getParcelFromDb(
-  parcelId: string,
-  communeInsee?: string | null,
-): Promise<ParcelRecord | null> {
-  try {
-    const q = supabase
-      .from("cadastre_parcelles_cache")
-      .select("*")
-      .eq("parcel_id", parcelId)
-      .limit(1);
-
-    if (communeInsee) q.eq("commune_insee", communeInsee);
-
-    const { data, error } = await q.maybeSingle();
-
-    if (error) {
-      console.error("❌ getParcelFromDb error:", error);
-      return null;
-    }
-
-    if (!data) {
-      console.warn("⚠️ getParcelFromDb: aucun enregistrement");
-      return null;
-    }
-
-    return {
-      parcel_id: data.parcel_id ?? parcelId,
-      commune_insee: data.commune_insee ?? communeInsee ?? null,
-      surface_terrain_m2:
-        typeof data.surface_terrain_m2 === "number"
-          ? data.surface_terrain_m2
-          : typeof data.surface_m2 === "number"
-          ? data.surface_m2
-          : null,
-      ...data,
+  const stationnement =
+    originalRules.stationnement ?? {
+      places_par_logement: 1.5,
+      surface_par_place_m2: 25,
     };
-  } catch (e) {
-    console.error("❌ Exception getParcelFromDb:", e);
-    return null;
-  }
+
+  return {
+    ...plu,
+    rules: {
+      ...originalRules,
+      stationnement,
+    },
+  };
 }
 
-// -------------------------------------------------
-// 2) PLU pour une parcelle (RPC existante)
-// -------------------------------------------------
+// -----------------------------------------------------------------------------
+// Helpers robustes (retry geom)
+// -----------------------------------------------------------------------------
+function asTrimmedString(v: any): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s.length ? s : null;
+}
 
-async function getPluForParcel(
-  parcelId: string,
-  communeInsee?: string | null,
-): Promise<PluForParcelResult | null> {
-  const params: Record<string, any> = { parcel_id: parcelId };
-  if (communeInsee) params.commune_insee = communeInsee;
+function normalizeGeojsonGeometry(input: any): { geom: any | null; reason?: string } {
+  if (!input || typeof input !== "object") return { geom: null, reason: "GEOJSON_EMPTY" };
 
-  const { data, error } = await supabase.rpc(
-    "plu_get_for_parcelle_any",
-    params,
+  const t = input.type;
+
+  if (t === "FeatureCollection") {
+    return { geom: null, reason: "GEOJSON_FEATURECOLLECTION_NOT_ALLOWED" };
+  }
+
+  if (t === "Feature") {
+    if (input.geometry && typeof input.geometry === "object" && typeof input.geometry.type === "string") {
+      return { geom: input.geometry };
+    }
+    return { geom: null, reason: "GEOJSON_FEATURE_NO_GEOMETRY" };
+  }
+
+  // Geometry
+  if (typeof t === "string" && (input.coordinates || t === "GeometryCollection")) {
+    return { geom: input };
+  }
+
+  return { geom: null, reason: "GEOJSON_UNSUPPORTED_SHAPE" };
+}
+
+function upperReason(v: any): string {
+  const s = asTrimmedString(v);
+  return (s ?? "").toUpperCase();
+}
+
+function isZoneNotFoundReason(reasonUpper: string): boolean {
+  if (!reasonUpper) return false;
+  return reasonUpper.includes("ZONE_NOT_FOUND") || reasonUpper.includes("PLU_ZONE_NOT_FOUND");
+}
+
+/**
+ * Essaie d'extraire une geometry GeoJSON depuis les retours possibles de get_plu_rules_for_parcelle_v2.
+ * Supporte: { parcel:{geometry} }, { debug:{parcel:{geometry}} }, wrappers, etc.
+ */
+function extractGeomFromParcelEngine(data: any): any | null {
+  if (!data || typeof data !== "object") return null;
+
+  return (
+    data?.parcel?.geometry ??
+    data?.parcel?.geom ??
+    data?.parcel_geojson ??
+    data?.geom ??
+    data?.geometry ??
+    data?.debug?.parcel?.geometry ??
+    data?.debug?.parcel?.geom ??
+    data?.debug?.parcel_geojson ??
+    data?.debug?.geom ??
+    data?.debug?.geometry ??
+    data?.raw_plu_engine?.parcel?.geometry ??
+    data?.raw_plu_engine?.parcel?.geom ??
+    data?.debug?.raw_plu_engine?.parcel?.geometry ??
+    data?.debug?.raw_plu_engine?.parcel?.geom ??
+    null
   );
-
-  if (error) {
-    console.error("❌ RPC plu_get_for_parcelle_any error:", error);
-    return null;
-  }
-
-  if (!data) {
-    console.warn("⚠️ plu_get_for_parcelle_any a renvoyé null");
-    return null;
-  }
-
-  const root = (data as any).plu_get_for_parcelle_any ?? data;
-
-  return {
-    zone: root.zone ?? null,
-    found: !!root.found,
-    rules:
-      (root.rules as PluRuleset | null) ??
-      (root.ruleset as PluRuleset | null) ??
-      null,
-    source: root.source ?? null,
-  };
 }
 
-// -------------------------------------------------
-// 3) Appel Promoteur_v1(input jsonb)
-// -------------------------------------------------
-
-async function callPromoteurBilan(args: {
-  parcel: ParcelRecord;
-  plu: PluForParcelResult | null;
-}): Promise<PromoteurBilan | null> {
-  const { parcel, plu } = args;
-
-  const surface =
-    parcel.surface_terrain_m2 ??
-    (typeof parcel["surface_m2"] === "number"
-      ? (parcel["surface_m2"] as number)
-      : null);
-
-  const promoteurInput = {
-    parcel_id: parcel.parcel_id,
-    commune_insee: parcel.commune_insee,
-    zone_code: plu?.zone?.zone_code ?? null,
-    surface_terrain_m2: surface,
-    rules: plu?.rules ?? null,
-  };
-
-  console.log("ℹ️ callPromoteurBilan input:", promoteurInput);
-
-  const { data, error } = await supabase.rpc("promoteur_v1", {
-    input: promoteurInput,
-  });
-
-  if (error) {
-    console.error("❌ RPC promoteur_v1 error:", error);
-    return {
-      success: false,
-      version: "promoteur_v1",
-      appreciation: "erreur",
-      bilan: null,
-      error: error.message,
-    };
-  }
-
-  if (!data) {
-    console.warn("⚠️ promoteur_v1 a renvoyé null");
-    return {
-      success: false,
-      version: "promoteur_v1",
-      appreciation: "indisponible",
-      bilan: null,
-    };
-  }
-
-  const root = (data as any).promoteur_v1 ?? data;
-
-  return {
-    success: root.success ?? true,
-    version: root.version ?? "promoteur_v1",
-    appreciation: root.appreciation ?? null,
-    bilan: root.bilan ?? root,
-  };
-}
-
-// -------------------------------------------------
-// 4) Handler principal
-// -------------------------------------------------
-
-serve(async (req: Request) => {
+serve(async (req: Request): Promise<Response> => {
+  // CORS préflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  if (req.method !== "POST") {
-    return jsonResponse({
-      success: false,
-      version: "promoteur-from-parcelle-v1",
-      inputs: { parcel_id: "" },
-      error: "Méthode non autorisée",
-    });
-  }
-
-  let body: PromoteurFromParcelRequest;
-
   try {
-    body = (await req.json()) as PromoteurFromParcelRequest;
-  } catch (e) {
-    return badRequest("JSON invalide");
-  }
+    const body = (await req.json()) as {
+      parcel_id?: string;
+      commune_insee?: string;
+      surface_terrain_m2?: number;
+      parcel_geojson?: Json;
+      parcel?: Json;
+    };
 
-  const parcelId = body.parcel_id?.trim();
-  const communeInsee = body.commune_insee ?? null;
-  const surfaceOverride =
-    typeof body.surface_terrain_m2 === "number"
-      ? body.surface_terrain_m2
-      : null;
+    const parcelId = asTrimmedString(body.parcel_id);
+    const communeInsee = asTrimmedString(body.commune_insee);
+    const surfaceTerrainInput = body.surface_terrain_m2;
+    const parcelGeojson = body.parcel_geojson;
+    let parcel: Json | null = body.parcel ?? null;
 
-  const baseResponse: Omit<PromoteurFromParcelResponse, "success"> = {
-    version: "promoteur-from-parcelle-v1",
-    inputs: {
-      parcel_id: parcelId ?? "",
-      commune_insee: communeInsee,
-      surface_terrain_m2: surfaceOverride,
-    },
-  };
+    const inputs = {
+      parcel_id: parcelId ?? null,
+      commune_insee: communeInsee ?? null,
+      surface_terrain_m2: surfaceTerrainInput ?? null,
+      has_geojson: parcelGeojson ? true : false,
+    };
 
-  if (!parcelId) {
-    return badRequest("Le champ parcel_id est obligatoire", baseResponse);
-  }
-
-  try {
-    // 1) Lire la parcelle
-    let parcel = await getParcelFromDb(parcelId, communeInsee);
-    if (!parcel) {
-      parcel = {
-        parcel_id: parcelId,
-        commune_insee: communeInsee,
-        surface_terrain_m2: surfaceOverride ?? null,
-      };
+    if (!parcelId && !communeInsee) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          version: "promoteur-from-parcelle-v3",
+          inputs,
+          error: {
+            code: "MISSING_PARCEL_INPUT",
+            message: "Au moins parcel_id ou commune_insee doit être fourni.",
+          },
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
-    // override surface
-    if (surfaceOverride !== null) {
-      parcel.surface_terrain_m2 = surfaceOverride;
-    }
-
-    // 2) Lire les règles PLU
-    const plu = await getPluForParcel(parcel.parcel_id, parcel.commune_insee);
-
-    // 3) Bilan Promoteur
-    const promoteur = await callPromoteurBilan({
-      parcel,
-      plu: plu ?? null,
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
     });
 
-    return jsonResponse({
-      ...baseResponse,
+    //----------------------------------------------------------------------
+    // 1) Récupération de la parcelle (quand on a le cadastre en base, ex IDF)
+    //----------------------------------------------------------------------
+    if (!parcel && parcelId) {
+      const { data, error } = await supabase
+        .from("cadastre_parcelles")
+        .select(
+          [
+            "id",
+            "code_departement",
+            "code_commune",
+            "commune",
+            "section",
+            "numero",
+            "props",
+          ].join(","),
+        )
+        .eq("id", parcelId)
+        .maybeSingle();
+
+      if (error) {
+        console.warn("Error reading cadastre_parcelles:", error.message);
+      }
+
+      if (data) {
+        const row = data as any;
+        const codeDepartement = asTrimmedString(row.code_departement) ?? "";
+        const codeCommune = asTrimmedString(row.code_commune) ?? "";
+        const communeCode =
+          codeDepartement && codeCommune ? `${codeDepartement}${codeCommune}` : communeInsee ?? null;
+
+        parcel = {
+          parcel_id: row.id,
+          commune_insee: communeCode,
+          commune: row.commune,
+          section: row.section,
+          numero: row.numero,
+          surface_terrain_m2:
+            surfaceTerrainInput ??
+            (row.props && row.props.contenance ? Number(row.props.contenance) : null),
+          props: row.props ?? {},
+        };
+      }
+    }
+
+    //----------------------------------------------------------------------
+    // 2) Récupération des règles PLU
+    //----------------------------------------------------------------------
+    let plu: any = null;
+    let plu_engine_source: "geom" | "parcel" | null = null;
+    let retry_debug: any = null;
+
+    if (communeInsee && parcelGeojson) {
+      // Mode "par géométrie" (ex: Ascain, API Etalab)
+      const geoNorm = normalizeGeojsonGeometry(parcelGeojson);
+      const geo = geoNorm.geom;
+
+      if (!geo) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            version: "promoteur-from-parcelle-v3",
+            inputs,
+            parcel,
+            error: { code: "GEOJSON_INVALID", message: geoNorm.reason ?? "Invalid GeoJSON" },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      const { data, error } = await supabase.rpc("get_plu_rules_for_geom_v1", {
+        p_commune_insee: communeInsee,
+        p_parcel_geojson: geo, // ✅ toujours geometry (pas feature collection)
+      });
+
+      if (error) {
+        console.error("get_plu_rules_for_geom_v1 error:", error.message);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            version: "promoteur-from-parcelle-v3",
+            inputs,
+            parcel,
+            error: { code: "PLU_GEOM_ERROR", message: error.message },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      plu = data;
+      plu_engine_source = "geom";
+    } else if (parcelId) {
+      // Mode "par parcelle" (IDF avec cadastre importé)
+      const { data, error } = await supabase.rpc("get_plu_rules_for_parcelle_v2", {
+        p_parcel_id: parcelId,
+      });
+
+      if (error) {
+        console.error("get_plu_rules_for_parcelle_v2 error:", error.message);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            version: "promoteur-from-parcelle-v3",
+            inputs,
+            parcel,
+            error: { code: "PLU_PARCEL_ERROR", message: error.message },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      // Support wrapper ou direct
+      const rawParcelEngine = data;
+      const maybePlu = (data as any)?.plu ?? data;
+
+      plu = maybePlu;
+      plu_engine_source = "parcel";
+
+      // ✅ RETRY GEOM si ZONE_NOT_FOUND et geometry disponible depuis parcel-engine
+      const reasonUpper =
+        upperReason((maybePlu as any)?.reason) ||
+        upperReason((rawParcelEngine as any)?.reason) ||
+        upperReason((rawParcelEngine as any)?.plu?.reason);
+
+      const zoneNotFound = !maybePlu?.found && isZoneNotFoundReason(reasonUpper);
+
+      const geomFromEngine = extractGeomFromParcelEngine(rawParcelEngine);
+      const geomNorm = normalizeGeojsonGeometry(geomFromEngine);
+      const geomForRetry = geomNorm.geom;
+
+      if (zoneNotFound && communeInsee && geomForRetry) {
+        const { data: retryData, error: retryErr } = await supabase.rpc("get_plu_rules_for_geom_v1", {
+          p_commune_insee: communeInsee,
+          p_parcel_geojson: geomForRetry,
+        });
+
+        retry_debug = {
+          attempted: true,
+          reason: reasonUpper,
+          geom_type: geomForRetry?.type ?? null,
+          geom_invalid_reason: geomForRetry ? null : geomNorm.reason ?? null,
+          error: retryErr?.message ?? null,
+          found: retryData?.found ?? false,
+        };
+
+        if (!retryErr && retryData?.found) {
+          plu = retryData;
+          plu_engine_source = "geom";
+        }
+      } else {
+        retry_debug = {
+          attempted: false,
+          zone_not_found: zoneNotFound,
+          reason: reasonUpper || null,
+          has_commune_insee: !!communeInsee,
+          has_geom_from_engine: !!geomFromEngine,
+          geom_invalid_reason: geomFromEngine ? (geomNorm.reason ?? null) : "NO_GEOM_FROM_ENGINE",
+        };
+      }
+    } else {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          version: "promoteur-from-parcelle-v3",
+          inputs,
+          parcel,
+          error: {
+            code: "NO_PLU_STRATEGY_AVAILABLE",
+            message:
+              "Impossible de déterminer la stratégie PLU (ni géométrie + INSEE, ni parcel_id).",
+          },
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (!plu?.found) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          version: "promoteur-from-parcelle-v3",
+          inputs,
+          parcel,
+          plu,
+          debug: {
+            plu_engine_source,
+            retry_geom: retry_debug,
+          },
+          error: { code: "PLU_NOT_FOUND", details: plu },
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    //----------------------------------------------------------------------
+    // 2bis) Enrichissement léger des règles PLU (stationnement par défaut)
+    //----------------------------------------------------------------------
+    const enrichedPlu = enrichPluRules(plu);
+
+    //----------------------------------------------------------------------
+    // 3) Calcul du massing v0 à partir des règles PLU
+    //----------------------------------------------------------------------
+    const surfaceTerrain =
+      surfaceTerrainInput ??
+      (parcel && (parcel as any).surface_terrain_m2 ? Number((parcel as any).surface_terrain_m2) : null);
+
+    const rules = enrichedPlu && enrichedPlu.rules ? enrichedPlu.rules : {};
+
+    // Emprise (ratio)
+    const empriseRatioRaw =
+      rules && rules.emprise && typeof (rules as any).emprise.emprise_max_ratio !== "undefined"
+        ? (rules as any).emprise.emprise_max_ratio
+        : null;
+
+    const empriseRatio =
+      typeof empriseRatioRaw === "number" ? empriseRatioRaw : empriseRatioRaw !== null ? Number(empriseRatioRaw) : null;
+
+    const groundFootprintM2 = surfaceTerrain && empriseRatio ? surfaceTerrain * empriseRatio : null;
+
+    // Hauteur max
+    const maxHeightRaw =
+      rules && rules.hauteur && typeof (rules as any).hauteur.max_hauteur_m !== "undefined"
+        ? (rules as any).hauteur.max_hauteur_m
+        : null;
+
+    const maxHeightM =
+      typeof maxHeightRaw === "number" ? maxHeightRaw : maxHeightRaw !== null ? Number(maxHeightRaw) : null;
+
+    const estimatedFloors = maxHeightM ? Math.max(1, Math.round(maxHeightM / 3)) : null;
+
+    const massing = {
+      enabled: !!groundFootprintM2 && !!maxHeightM,
+      reason: !groundFootprintM2 || !maxHeightM ? "Règles PLU incomplètes (emprise ou hauteur manquantes)" : null,
+      ground_footprint_m2: groundFootprintM2,
+      max_emprise_m2: groundFootprintM2,
+      max_height_m: maxHeightM,
+      blocks:
+        groundFootprintM2 && maxHeightM
+          ? [
+              {
+                id: "B1",
+                label: "Bâtiment principal",
+                height_m: maxHeightM,
+                floors: estimatedFloors ?? 1,
+                footprint_m2: groundFootprintM2,
+              },
+            ]
+          : [],
+      implantation: rules && (rules as any).implantation ? (rules as any).implantation : null,
+      stationnement: rules && (rules as any).stationnement ? (rules as any).stationnement : null,
+    };
+
+    //----------------------------------------------------------------------
+    // 4) (Optionnel) promoteur_v1 plus tard
+    //----------------------------------------------------------------------
+    let promoteur: any = null;
+
+    //----------------------------------------------------------------------
+    // 5) Réponse
+    //----------------------------------------------------------------------
+    const responseBody = {
       success: true,
+      version: "promoteur-from-parcelle-v3",
+      inputs,
       parcel,
-      plu: plu ?? null,
-      promoteur: promoteur ?? null,
+      plu: enrichedPlu,
+      promoteur,
+      massing,
+      debug: {
+        plu_engine_source,
+        retry_geom: retry_debug,
+      },
+    };
+
+    return new Response(JSON.stringify(responseBody), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (e: unknown) {
-    return jsonResponse({
-      ...baseResponse,
-      success: false,
-      error:
-        e instanceof Error ? e.message : "Erreur inconnue promoteur-from-parcelle",
-      details: String(e),
-    });
+  } catch (err) {
+    console.error("promoteur-from-parcelle-v3 fatal error:", err);
+
+    return new Response(
+      JSON.stringify({
+        success: false,
+        version: "promoteur-from-parcelle-v3",
+        error: {
+          code: "UNEXPECTED_ERROR",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 });

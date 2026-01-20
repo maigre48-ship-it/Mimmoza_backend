@@ -28,3 +28,35 @@ supabase/.branches
 supabase/.temp
 supabase/.types
 supabase/.env
+.env.local
+
+# =========================
+# ENV / SECRETS (CRITICAL)
+# =========================
+.env
+.env.*
+**/.env
+**/.env.*
+
+# =========================
+# Node
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# Supabase local
+# =========================
+.supabase/
+supabase/.temp/
+
+# =========================
+# IDE / OS / OneDrive
+# =========================
+.vscode/
+.DS_Store
+Thumbs.db
+~$*
+
