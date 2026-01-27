@@ -1,62 +1,26 @@
-# Node
-node_modules/
-
-# Données énormes à ne pas versionner
-Cadastre/
-DVF_chunks/
-DVF_chunks_20k/
-DVF_chunks_small/
-dvf/
-parsed/
-PLU/
-PLU zonages/
-Transport Ile-de-France/
-Nomenclature BPE/
-Equipements/
-Education nationale/
-Insee population/
-SOURCES DATA/
-valeursfoncieres-2025-s1/
-valeursfoncieres-2025-s1.zip*
-*.zip
-
-# Sorties temporaires
-*.bak
-
-# local Supabase
-supabase/.branches
-supabase/.temp
-supabase/.types
-supabase/.env
-.env.local
-
-# =========================
-# ENV / SECRETS (CRITICAL)
-# =========================
+﻿# Secrets & env
 .env
 .env.*
-**/.env
-**/.env.*
+*.key
+*.pem
 
-# =========================
-# Node
-# =========================
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# =========================
 # Supabase local
-# =========================
-.supabase/
 supabase/.temp/
+supabase/.branches/
+supabase/.config/
 
-# =========================
-# IDE / OS / OneDrive
-# =========================
-.vscode/
+# Logs
+*.log
+
+# OS
 .DS_Store
 Thumbs.db
-~$*
+
+# Large local datasets
+Cadastre/
+*.geojson
+*.jsonl
+*.ndjson
+*.parquet
+*.gpkg
 
