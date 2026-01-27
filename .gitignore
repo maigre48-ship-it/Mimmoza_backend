@@ -24,3 +24,34 @@ Cadastre/
 *.parquet
 *.gpkg
 
+
+# Large datasets
+Cadastre/
+
+
+# deps
+node_modules/
+
+# huge datasets / local dumps
+DVF_chunks/
+DVF_chunks_20k/
+DVF_chunks_small/
+dvf/
+SOURCES DATA/
+Insee population/
+Nomenclature BPE/
+Equipements/
+Education nationale/
+Transport Ile-de-France/
+PLU/
+PLU zonages/
+
+# generated / cache
+*.zip
+*.7z
+*.rar
+*.parquet
+*.gpkg
+*.ndjson
+*.jsonl
+
