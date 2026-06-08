@@ -55,3 +55,7 @@ PLU zonages/
 *.ndjson
 *.jsonl
 
+
+# Large local datasets
+valeursfoncieres-2025-s1/
+Base niveau commune en 2021/
