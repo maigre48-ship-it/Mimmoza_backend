@@ -437,7 +437,7 @@ async function fetchParcelFromApiCarto(idu: string, communeInseeHint?: string | 
   const section = parsed.section; const numero = parsed.numero; const com_abs = parsed.com_abs ?? "000";
   if (!code_insee || !section || !numero) { dbg.error = "Missing code_insee/section/numero"; return { point: null, dbg }; }
   const url = "https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=" + encodeURIComponent(code_insee) + "&section=" + encodeURIComponent(section) + "&numero=" + encodeURIComponent(numero) + "&com_abs=" + encodeURIComponent(com_abs) + "&_limit=1";
-  dbg.url = url; if (debug) console.log("api-carto cadastre url:", url);
+  dbg.url = url;
   try {
     const resp = await fetch(url, { method: "GET", headers: { accept: "application/json" } });
     dbg.status = resp.status; dbg.ok = resp.ok;
@@ -467,7 +467,7 @@ async function resolvePointFromParcelId(parcelId: string, communeInsee?: string 
   const tryRpc = async (comm: string | null) => await supabase.rpc("get_parcelle_centroid", { p_parcel_id: parcelId, p_commune_insee: comm });
   let { data, error } = await tryRpc(communeInsee?.toString() ?? null);
   if (!error && (!Array.isArray(data) || data.length === 0)) ({ data, error } = await tryRpc(null));
-  if (error) { console.error("RPC get_parcelle_centroid error:", error); return { point: null, rpcDebug: { error } }; }
+  if (error) { console.error("RPC get_parcelle_centroid error"); return { point: null, rpcDebug: { error } }; }
   if (Array.isArray(data) && data.length > 0) {
     const row: any = data[0]; const rLat = numOrNull(row.lat); const rLon = numOrNull(row.lon);
     if (rLat != null && rLon != null) return { point: { lat: rLat, lon: rLon, source: "parcel", parcel_id: parcelId, commune_insee: safeToString(row.commune_insee) ?? communeInsee?.toString() ?? undefined, surface_m2: numOrNull(row.surface_m2) ?? undefined }, rpcDebug: { row } };
@@ -482,10 +482,8 @@ async function resolveAnalysisPoint(payload: MarketStudyPayload): Promise<{ poin
     return { point: { lat, lon, source: "payload", parcel_id: parcel_id ?? undefined, commune_insee: commune_insee?.toString() }, error: null };
   }
   if (parcel_id) {
-    console.log("Resolution point via parcel_id:", parcel_id);
     const res = await resolvePointFromParcelId(parcel_id, commune_insee ?? null, !!debug);
-    if (res.point) { console.log("Point resolu depuis parcelle:", res.point.lat, res.point.lon); return { point: res.point, error: null }; }
-    console.warn("[resolveAnalysisPoint] Parcelle non résolue, fallback commune_insee:", commune_insee?.toString());
+    if (res.point) return { point: res.point, error: null };
   }
   const inseeCode = commune_insee?.toString() ?? null;
   if (inseeCode && inseeCode.length === 5) {
@@ -512,9 +510,8 @@ async function resolveStandardPoint(payload: StandardPayload): Promise<{ point: 
   }
   const effectiveCommune = commune_insee?.toString() ?? commune_code ?? null;
   if (parcel_id) {
-    console.log("[Standard] Resolution point via parcel_id:", parcel_id);
     const res = await resolvePointFromParcelId(parcel_id, effectiveCommune, !!debug);
-    if (res.point) { console.log("[Standard] Point resolu depuis parcelle:", res.point.lat, res.point.lon); return { point: res.point, error: null }; }
+    if (res.point) return { point: res.point, error: null };
     if (debug) return { point: null, error: "Parcelle non resolue", debugResolve: { parcel_id, commune_insee: effectiveCommune, cadastre: res.cadastreDebug, rpc: res.rpcDebug } };
     return { point: null, error: "Impossible de resoudre le point d'analyse via parcel_id." };
   }
@@ -654,7 +651,7 @@ async function fetchDvfMarketStatsRpc(point: ResolvedPoint, radiusKm: number, mo
     let comps: MarketComp[] = [];
     if (Array.isArray(compsData)) comps = compsData.map((c: any, idx: number) => ({ id: safeToString(c.id)??String(idx), address: safeToString(c.adresse)??undefined, price_m2: numOrNull(c.price_m2)??undefined, surface_m2: numOrNull(c.surface_m2)??undefined, date: safeToString(c.date_mutation)??undefined, type_local: safeToString(c.type_local)??undefined, distance_m: numOrNull(c.distance_m)??undefined, commune: safeToString(c.commune)??undefined }));
     return { stats, comps, error: null };
-  } catch (e) { console.error("fetchDvfMarketStatsRpc error:", e); return { stats: null, comps: [], error: String(e) }; }
+  } catch (e) { console.error("fetchDvfMarketStatsRpc error"); return { stats: null, comps: [], error: String(e) }; }
 }
 
 // ============================================================================
@@ -719,18 +716,18 @@ async function fetchBpeStats(lat: number, lon: number, radiusM = 500, communeIns
     const details: BpeKpis = { total_equipements: totalInRadius, nb_commerces, nb_sante, nb_services, nb_enseignement, nb_sport_culture, score_commerces, score_sante, score_services, scoreCommodites, rayon_m: radiusM, sante_details, commerces_proches: commercesProches.slice(0,10), medecins_proches: medecinsProches.slice(0,10) };
     const result = { scoreCommodites: coverage === "ok" ? scoreCommodites : null, details, coverage, totalEquipements: totalInRadius };
     await saveToCache(cacheKey, "bpe", result, 86400); return result;
-  } catch (e) { console.error("BPE API error:", e); if (supabase) return await fetchBpeStatsRpc(lat, lon, radiusM); return { scoreCommodites: null, details: null, coverage: "error" as Coverage, totalEquipements: 0 }; }
+  } catch (e) { console.error("BPE API error"); if (supabase) return await fetchBpeStatsRpc(lat, lon, radiusM); return { scoreCommodites: null, details: null, coverage: "error" as Coverage, totalEquipements: 0 }; }
 }
 
 async function fetchBpeStatsRpc(lat: number, lon: number, radiusM = 500): Promise<{ scoreCommodites: number | null; details: BpeKpis | null; coverage: Coverage; totalEquipements: number }> {
   if (!supabase) return { scoreCommodites: null, details: null, coverage: "not_covered", totalEquipements: 0 };
   try {
     const { data, error } = await supabase.rpc("get_bpe_proximite", { p_lat: lat, p_lon: lon, p_rayon_m: radiusM, p_types: null });
-    if (error) { console.error("RPC get_bpe_proximite error:", error); return { scoreCommodites: null, details: null, coverage: "error", totalEquipements: 0 }; }
+    if (error) { console.error("RPC get_bpe_proximite error"); return { scoreCommodites: null, details: null, coverage: "error", totalEquipements: 0 }; }
     const score = numOrNull((data as any)?.scoreCommodites); const totalEquipements = numOrNull((data as any)?.total_equipements_proximite) ?? 0;
     if (totalEquipements === 0 && (score === 0 || score == null)) return { scoreCommodites: null, details: data as BpeKpis, coverage: "no_data", totalEquipements: 0 };
     return { scoreCommodites: score, details: data as BpeKpis, coverage: score != null ? "ok" : "no_data", totalEquipements };
-  } catch (e) { console.error("fetchBpeStatsRpc error:", e); return { scoreCommodites: null, details: null, coverage: "error", totalEquipements: 0 }; }
+  } catch (e) { console.error("fetchBpeStatsRpc error"); return { scoreCommodites: null, details: null, coverage: "error", totalEquipements: 0 }; }
 }
 
 // ============================================================================
@@ -753,7 +750,7 @@ async function fetchNearestPharmacyOverpass(lat: number, lon: number, maxRadiusM
         const distance = haversineDistance(lat, lon, elLat, elLon);
         if (distance < minDistance) { minDistance = distance; const tags = el.tags || {}; nearest = { nom: tags.name || tags["name:fr"] || "Pharmacie", type: "Pharmacie", type_code: "OSM_PHARMACY", distance_m: Math.round(distance), distance_km: metersToKm(distance), adresse: [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ") || undefined, commune: tags["addr:city"] || tags["addr:municipality"] || undefined }; }
       }
-      if (nearest) { if (debug) console.log("OSM Overpass: pharmacie trouvee \"" + nearest.nom + "\" a " + String(nearest.distance_km) + "km"); return nearest; }
+      if (nearest) return nearest;
     } catch (e) { if (debug) console.warn("OSM Overpass error (rayon " + String(radiusM) + "m):", e); }
   }
   return null;
@@ -845,7 +842,7 @@ async function fetchEssentialServicesRaw(lat: number, lon: number, radiusM: numb
     if (debug) console.log(`[Overpass essentials] Cache hit — ${(cached as EssentialServicesRawResult).items?.length ?? 0} items`);
     return cached as EssentialServicesRawResult;
   }
-  if (debug) console.log(`[Overpass essentials] Requête Overpass lat=${lat} lon=${lon} rayon=${radiusM}m`);
+  if (debug) console.log(`[Overpass essentials] Requête Overpass rayon=${radiusM}m`);
   try {
     const query = buildOverpassEssentialsQuery(lat, lon, radiusM);
     const resp = await fetch(OVERPASS_API_URL, {
@@ -907,11 +904,11 @@ async function fetchEssentialServicesViaRpc(lat: number, lon: number, radiusM: n
   if (!supabase) return [];
   try {
     const { data, error } = await supabase.rpc("get_bpe_essentiels_radius", { p_lat: lat, p_lon: lon, p_radius_m: radiusM });
-    if (error) { if (debug) console.warn("RPC get_bpe_essentiels_radius error:", error); return []; }
+    if (error) { if (debug) console.warn("RPC get_bpe_essentiels_radius error"); return []; }
     if (!Array.isArray(data)) return [];
     if (debug) console.log("RPC get_bpe_essentiels_radius: " + String(data.length) + " items");
     return data.map((item: any) => ({ type_code: item.type_code || item.typequ || "", distance_m: item.distance_m || 0, nom: item.nom || item.name || undefined, type_libelle: item.type_libelle || undefined, commune: item.commune || item.libcom || undefined, adresse: item.adresse || undefined }));
-  } catch (e) { if (debug) console.error("fetchEssentialServicesViaRpc error:", e); return []; }
+  } catch (e) { if (debug) console.error("fetchEssentialServicesViaRpc error"); return []; }
 }
 
 // ============================================================================
@@ -1062,7 +1059,7 @@ async function fetchTransportScore(
   const dep = communeInsee?.slice(0, 2) ?? "";
   const isIdf = ["75","77","78","91","92","93","94","95"].includes(dep);
   if (isIdf) {
-    console.log(`[fetchTransportScore] Fallback IDFM pour commune ${communeInsee ?? "?"}`);
+    console.log("[fetchTransportScore] Fallback IDFM");
     const idfmScore = await fetchTransportScoreIdfm(lat, lon, 1000, communeInsee);
     if (idfmScore != null) {
       const label = idfmScore >= 80 ? "Très bien desservi (IDFM)" : idfmScore >= 60 ? "Bien desservi (IDFM)" : "Desservi (IDFM)";
@@ -1079,7 +1076,7 @@ async function fetchTransportScore(
 async function fetchHealthFicheForCommune(codeCommune: string): Promise<{ data: HealthFicheEnriched | null; coverage: Coverage }> {
   if (!supabase || !codeCommune) return { data: null, coverage: "not_covered" };
   try { const { data, error } = await supabase.rpc("get_fiche_sante_commune", { p_code_commune: codeCommune }); if (error) return { data: null, coverage: "error" }; return { data: data as HealthFicheEnriched | null, coverage: data ? "ok" : "no_data" }; }
-  catch (e) { console.error("[fetchHealthFicheForCommune] error:", e); return { data: null, coverage: "error" }; }
+  catch (e) { console.error("[fetchHealthFicheForCommune] error"); return { data: null, coverage: "error" }; }
 }
 
 async function fetchHopitalProche(lat: number, lon: number, maxRadiusKm: number = 50): Promise<HopitalProche> {
@@ -1168,7 +1165,7 @@ async function fetchEcolesStats(lat: number, lng: number): Promise<{ data: Ecole
     if (nearestDistance!=null) { if (nearestDistance<=200) baseScore=95; else if (nearestDistance<=300) baseScore=90; else if (nearestDistance<=500) baseScore=80; else if (nearestDistance<=800) baseScore=70; else if (nearestDistance<=1200) baseScore=60; }
     const densityBonus = (count300m>=2?5:0)+(count500m>=4?5:0)+(count1000m>=8?5:0);
     return { data: { nearestDistanceM: nearestDistance, nearestName: safeToString(nearest.nom), nearestType: safeToString(nearest.type_etablissement), count300m, count500m, count1000m, scoreEcoles: Math.min(100,baseScore+densityBonus) }, coverage: "ok" };
-  } catch (e) { console.error("[fetchEcolesStats] error:", e); return { data: null, coverage: "error" }; }
+  } catch (e) { console.error("[fetchEcolesStats] error"); return { data: null, coverage: "error" }; }
 }
 
 // ============================================================================
@@ -1203,7 +1200,7 @@ function buildEssentialServicesBlock(rawItems: Array<{ type_code: string; distan
   }
   const buildSummary = (bucket: EssentialServiceBucket): EssentialServiceSummary => { const items = buckets[bucket]; if (items.length===0) return createEmptySummary(radiusKm); items.sort((a,b)=>a.distance_m-b.distance_m); return { radius_km: radiusKm, count: items.length, nearest: items[0], top: items.slice(0,5) }; };
   const result: EssentialServicesBlock = { zone_type: isRural?"rural":"urbain", radius_km: radiusKm, pharmacie: buildSummary("pharmacie"), banque_dab: buildSummary("banque_dab"), poste: buildSummary("poste"), station_service: buildSummary("station_service"), commerce_alimentaire: buildSummary("commerce_alimentaire"), medecin_generaliste: buildSummary("medecin_generaliste"), medecin_specialiste: buildSummary("medecin_specialiste"), dentiste: buildSummary("dentiste"), infirmier: buildSummary("infirmier"), kinesitherapeute: buildSummary("kinesitherapeute"), gendarmerie: buildSummary("gendarmerie"), commissariat: buildSummary("commissariat") };
-  if (debug && result.pharmacie.count===0) { console.log("DEBUG PHARMACIE: count=0"); console.log("  Echantillon items:", debugPharmacieItems.slice(0,30)); console.log("  Histogramme type_code:", Object.entries(typeCodeHistogram).sort((a,b)=>b[1]-a[1]).slice(0,20)); }
+  if (debug && result.pharmacie.count===0) console.log("[essential_services] pharmacie count=0");
   return result;
 }
 
@@ -1328,7 +1325,6 @@ async function computeSmartScoreV4Block(params: {
     const ratio = prix_m2_bien / dvfStats.price_median_eur_m2;
     if (ratio <= 0.15) priceOpportunityScore = 100; else if (ratio <= 0.30) priceOpportunityScore = 97; else if (ratio <= 0.50) priceOpportunityScore = 93; else if (ratio <= 0.70) priceOpportunityScore = 85; else if (ratio <= 0.85) priceOpportunityScore = 72; else if (ratio <= 0.95) priceOpportunityScore = 60; else if (ratio <= 1.05) priceOpportunityScore = 50; else if (ratio <= 1.15) priceOpportunityScore = 40; else if (ratio <= 1.30) priceOpportunityScore = 25; else if (ratio <= 1.50) priceOpportunityScore = 15; else priceOpportunityScore = 5;
     priceOpportunityDetail = { prix_m2_bien, prix_m2_marche: dvfStats.price_median_eur_m2, ratio: Math.round(ratio * 100) / 100, decote_pct: Math.round((1 - ratio) * 100), score: priceOpportunityScore };
-    if (debug) console.log("[SmartScore V4] Price opportunity:", priceOpportunityDetail);
   }
   const smartScoreV4 = computeSmartScoreV4({ essentialServicesScore: essServicesResult?.score ?? null, ruralAccessibilityScore: ruralAccessResult?.score ?? null, transportScore: transportApplicable ? transportScore : null, transportApplicable, ecolesScore, commoditesScore, santeScore, marketCompositeScore: marketComposite?.score ?? null, environmentScore: environmentResult?.score ?? null, demographicScore: demographicScore?.score ?? null, competitionScore: competitionResult?.score ?? null, priceOpportunityScore, isRural, projectNature });
   const dpeScore = mapDpeLabelToScore(dpe_label); const dpeConstraint = buildDpeConstraint(dpe_label);
@@ -1336,7 +1332,7 @@ async function computeSmartScoreV4Block(params: {
   const energyBusinessImpact = computeEnergyBusinessImpact({ dpeLabel: dpe_label, prix: prix_bien, surfaceM2: surface_m2_bien, monthlyRent: monthly_rent_target, nightlyRate: nightly_rate_target, renovationCostTotalEur: energyRenovationEstimate.estimated_cost_total_eur });
   const scoreBeforeDpeAdjustment = smartScoreV4.score; let adjustedScore = scoreBeforeDpeAdjustment;
   if (dpeConstraint.max_score_cap != null) adjustedScore = Math.min(scoreBeforeDpeAdjustment, dpeConstraint.max_score_cap);
-  if (debug) console.log("[SmartScore V4] result:", { score_before_dpe: scoreBeforeDpeAdjustment, score_after_dpe: adjustedScore, dpe_label, dpe_score: dpeScore, dpe_cap: dpeConstraint.max_score_cap });
+  if (debug) console.log("[SmartScore V4] result", { score: adjustedScore });
   return {
     score: adjustedScore, score_before_dpe_adjustment: scoreBeforeDpeAdjustment, verdict: smartScoreV4.verdict,
     pillar_scores: { ...smartScoreV4.pillar_scores, dpe: dpeScore }, weights: smartScoreV4.weights,
@@ -1355,10 +1351,8 @@ async function computeSmartScoreV4Block(params: {
 // ============================================================================
 async function handleMarketStudy(payload: MarketStudyPayload): Promise<Response> {
   const { parcel_id, commune_insee, project_nature, radius_km = 2, horizon_months = 24, targets, dpe_label = null, debug = false } = payload;
-  console.log("[Market Study v4.4] payload:", { parcel_id, commune_insee, project_nature, radius_km, horizon_months, dpe_label, debug });
-  const { point, error, inseeMeta, debugResolve } = await resolveAnalysisPoint(payload);
-  if (!point) return json({ success: false, error: error ?? "Impossible de resoudre le point d'analyse.", mode: "market_study", version: "v4.4", inseeMeta: inseeMeta ?? null, debugResolve: debug ? debugResolve : undefined }, 400);
-  console.log("[Market Study] Point resolu:", point);
+  const { point, error } = await resolveAnalysisPoint(payload);
+  if (!point) return json({ success: false, error: error ?? "Impossible de resoudre le point d'analyse.", mode: "market_study", version: "v4.4" }, 400);
   const communeInseeFinal = point.commune_insee ?? commune_insee?.toString() ?? null;
   const isRural = !isInGrandeAgglomeration(communeInseeFinal);
   const zoneType: "rural" | "urbain" = isRural ? "rural" : "urbain";
@@ -1381,7 +1375,6 @@ async function handleMarketStudy(payload: MarketStudyPayload): Promise<Response>
   const essentialServices = buildEssentialServicesBlock(essentialServicesRawResult.items, essentialServicesRadius, isRural, debug);
   let servicesRuraux: ServicesRuraux | null = buildServicesRurauxFromEssentialServices(essentialServices);
   let servicesProximiteDebug: any = null; let residencesSeniors: ResidenceSenior[] = [];
-  console.log("[services_ruraux] construit depuis essential_services:", { pharmacie: servicesRuraux.pharmacie_proche?.distance_km ?? null, commerce: servicesRuraux.supermarche_proche?.distance_km ?? null, medecin: servicesRuraux.medecin_proche?.distance_km ?? null, poste: servicesRuraux.poste_proche?.distance_km ?? null, banque: servicesRuraux.banque_proche?.distance_km ?? null, station: servicesRuraux.station_service_proche?.distance_km ?? null });
   if (supabase) {
     try {
       const sp = await (servicesProximiteV1 as any)({ supabase, lat: point.lat, lon: point.lon, zone_type: zoneType });
@@ -1471,13 +1464,7 @@ async function handleMarketStudy(payload: MarketStudyPayload): Promise<Response>
       kpis, insights, comps,
     },
   };
-  if (debug) {
-    const essentialServicesCounts: Record<string, number> = {};
-    for (const bucket of ALL_ESSENTIAL_BUCKETS) essentialServicesCounts[bucket] = essentialServices[bucket].count;
-    const rawItemsSample = essentialServicesRawResult.items.slice(0, 10).map(item => ({ type_code: item.type_code, distance_m: item.distance_m, commune: item.commune }));
-    output.debug = { timestamp: new Date().toISOString(), dvfApi, transportResult, bpeResult, ecolesResult, inseeResult: { coverage: inseeResult.coverage, data: inseeResult.data }, insee_socioeco_debug: inseeResult.socioEcoDebug, ehpad, servicesRuraux, servicesProximite: servicesProximiteDebug, residencesSeniors, isInGrandeAgglomeration: !isRural, bpeRadius, ehpadRadius, essential_services_debug: { radius_m: essentialServicesRadius, radius_km: metersToKm(essentialServicesRadius), raw_items_count: essentialServicesRawResult.items.length, raw_items_sample: rawItemsSample, counts_by_bucket: essentialServicesCounts }, smartscore_v4_debug: smartscoreV4Block };
-  }
-  console.log("[market_study] response ready, score V3:", indices.global_score, "score V4:", smartscoreV4Block.score, "DVF source:", dvfSource, "Zone:", zoneType, "DPE:", dpe_label ?? "N/A");
+  console.info("[smartscore-enriched-v3] market_study completed", { version: "v4.4", zone_type: zoneType, dvf_source: dvfSource, score_v3: indices.global_score, score_v4: smartscoreV4Block.score });
   return json(output, 200);
 }
 
@@ -1486,11 +1473,9 @@ async function handleMarketStudy(payload: MarketStudyPayload): Promise<Response>
 // ============================================================================
 async function handleStandard(payload: StandardPayload): Promise<Response> {
   const { address, cp, ville, surface, prix, travaux, userCriteria, meloId, type_local, dep_code, commune_code, parcel_id, commune_insee, transports, radius_km = 2, horizon_months = 24, dpe_label = null, debug = false } = payload;
-  console.log("[Standard v4.4] payload:", { address, cp, ville, surface, type_local, parcel_id, commune_insee: commune_insee ?? commune_code, dpe_label, debug });
   if (!supabase) return json({ success: false, error: "Supabase non initialise", mode: "standard", version: "v4.4" }, 500);
-  const { point, error: pointError, debugResolve } = await resolveStandardPoint(payload);
-  if (!point) return json({ success: false, error: pointError ?? "Impossible de resoudre le point d'analyse.", mode: "standard", version: "v4.4", debugResolve: debug ? debugResolve : undefined }, 400);
-  console.log("[Standard] Point resolu:", point);
+  const { point, error: pointError } = await resolveStandardPoint(payload);
+  if (!point) return json({ success: false, error: pointError ?? "Impossible de resoudre le point d'analyse.", mode: "standard", version: "v4.4" }, 400);
   const communeInseeFinal = point.commune_insee ?? commune_insee?.toString() ?? commune_code ?? null;
   const isRural = !isInGrandeAgglomeration(communeInseeFinal);
   const zoneType: "rural" | "urbain" = isRural ? "rural" : "urbain";
@@ -1571,13 +1556,7 @@ async function handleStandard(payload: StandardPayload): Promise<Response> {
       ehpad: { coverage: ehpad.coverage, source: ehpad.source, count: ehpad.count, radius_m: ehpad.radius_m, nearest: ehpad.nearest ?? null, reason: ehpad.reason ?? null },
     },
   };
-  if (debug) {
-    const essentialServicesCounts: Record<string, number> = {};
-    for (const bucket of ALL_ESSENTIAL_BUCKETS) essentialServicesCounts[bucket] = essentialServices[bucket].count;
-    const rawItemsSample = essentialServicesRawResult.items.slice(0, 10).map(item => ({ type_code: item.type_code, distance_m: item.distance_m, commune: item.commune }));
-    output.debug = { timestamp: new Date().toISOString(), components, coverage, dvfApi, transportResult, ecolesResult, bpeResult, healthResult, inseeResult: { coverage: inseeResult.coverage, data: inseeResult.data }, insee_socioeco_debug: inseeResult.socioEcoDebug, ehpad, servicesRuraux, servicesProximite: servicesProximiteDebug, residencesSeniors, isInGrandeAgglomeration: !isRural, bpeRadius, ehpadRadius, essential_services_debug: { radius_m: essentialServicesRadius, radius_km: metersToKm(essentialServicesRadius), raw_items_count: essentialServicesRawResult.items.length, raw_items_sample: rawItemsSample, counts_by_bucket: essentialServicesCounts }, smartscore_v4_debug: smartscoreV4Block };
-  }
-  console.log("[Standard] response ready, smartscore V3:", smartScore, "V4:", smartscoreV4Block.score, "DVF source:", dvfSource, "Zone:", zoneType, "DPE:", dpe_label ?? "N/A");
+  console.info("[smartscore-enriched-v3] standard completed", { version: "v4.4", zone_type: zoneType, dvf_source: dvfSource, score_v3: smartScore, score_v4: smartscoreV4Block.score });
   return json(output, 200);
 }
 
@@ -1625,12 +1604,9 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: false, error: "Invalid JSON" }, 400);
     }
 
-    console.log("[enriched-v3 v4.4] Received request:", {
-      mode: payload?.mode ?? null,
-      commune_insee: payload?.commune_insee ?? null,
-      parcel_id: payload?.parcel_id ?? null,
-      debug: payload?.debug ?? false,
-    });
+    if (payload?.debug === true) {
+      console.log("[enriched-v3 v4.4] Received request", { mode: payload?.mode ?? null });
+    }
 
     if ((payload as any).mode === "market_study") {
       console.log("[enriched-v3] Mode market_study detected -> routing enrichi v4.4");
@@ -1640,7 +1616,7 @@ serve(async (req: Request): Promise<Response> => {
     console.log("[enriched-v3] Mode standard detected -> routing standard v4.4");
     return await handleStandard(payload as StandardPayload);
   } catch (err) {
-    console.error("[enriched-v3 v4.4] Internal error:", err);
+    console.error("[enriched-v3 v4.4] Internal error");
     return json({ success: false, error: "Internal error", version: "v4.4" }, 500);
   }
 });

@@ -219,11 +219,10 @@ async function geocodeCommuneViaGeoApiGouv(
   | { ok: true; lat: number; lon: number; commune: { insee: string; nom?: string }; debug: any }
   | { ok: false; debug: any }
 > {
-  const debug: any = { kind: "geo.api.gouv.fr", url: null, sample: null };
+  const debug: any = { kind: "geo.api.gouv.fr" };
 
   const url =
     `https://geo.api.gouv.fr/communes/${encodeURIComponent(commune_insee)}?fields=centre,nom,code,codesPostaux`;
-  debug.url = url;
 
   const r = await fetch(url, { headers: { Accept: "application/json" } });
   if (!r.ok) {
@@ -232,14 +231,6 @@ async function geocodeCommuneViaGeoApiGouv(
   }
 
   const j = await r.json().catch(() => null);
-  debug.sample = j
-    ? {
-      code: j.code,
-      nom: j.nom,
-      codesPostaux: Array.isArray(j.codesPostaux) ? j.codesPostaux.slice(0, 2) : null,
-      hasCentre: !!j.centre,
-    }
-    : null;
 
   const coords = j?.centre?.coordinates;
   if (Array.isArray(coords) && coords.length === 2) {
@@ -268,16 +259,14 @@ async function geocodeCommuneViaBAN(
   | { ok: true; lat: number; lon: number; debug: any }
   | { ok: false; debug: any }
 > {
-  const debug: any = { kind: "BAN", attempts: [] };
+  const debug: any = { kind: "BAN" };
 
   const tryBan = async (q: string) => {
     const url =
       `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=1&citycode=${encodeURIComponent(commune_insee)}`;
-    debug.attempts.push({ q, url });
 
     const r = await fetch(url, { headers: { Accept: "application/json" } });
     if (!r.ok) {
-      debug.attempts[debug.attempts.length - 1].http = r.status;
       return null;
     }
     const j = await r.json().catch(() => null);
@@ -289,7 +278,6 @@ async function geocodeCommuneViaBAN(
         return { lat, lon };
       }
     }
-    debug.attempts[debug.attempts.length - 1].no_result = true;
     return null;
   };
 
@@ -349,7 +337,6 @@ async function resolvePointWithDebug(payload: Payload): Promise<
           step: "rpc_get_parcelle_centroid",
           ok: !error && Number.isFinite(Number(data?.lat)) && Number.isFinite(Number(data?.lon)),
           error: error?.message ?? null,
-          sample: data ? { lat: data.lat, lon: data.lon } : null,
         });
 
         if (
@@ -383,7 +370,6 @@ async function resolvePointWithDebug(payload: Payload): Promise<
       debug.steps.push({
         step: "geo_api_gouv_commune",
         ok: g.ok,
-        details: g.debug ?? null,
       });
 
       if (g.ok) {
@@ -413,7 +399,6 @@ async function resolvePointWithDebug(payload: Payload): Promise<
       debug.steps.push({
         step: "ban_geocode",
         ok: b.ok,
-        details: b.debug ?? null,
       });
 
       if (b.ok) {
@@ -590,31 +575,24 @@ async function tryFetchFallback(
   coverage: Record<string, "ok" | "missing" | "error">,
   fetch_debug: Record<string, any>,
 ) {
-  const attempts: any[] = [];
   let sawHardError = false;
 
   for (const url of urls) {
     try {
       const j = await fetchJson(url, 2);
       coverage[key] = "ok";
-      fetch_debug[key] = { ok: true, url, attempts };
+      fetch_debug[key] = { ok: true };
       return j;
     } catch (e) {
       const msg = String((e as any)?.message ?? e);
       const missing = isCoverageMissing(msg);
       if (!missing) sawHardError = true;
-
-      attempts.push({
-        url,
-        error: msg,
-        kind: missing ? "missing" : "error",
-      });
     }
   }
 
   // Si toutes les tentatives sont "missing", on marque missing; sinon error
   coverage[key] = sawHardError ? "error" : "missing";
-  fetch_debug[key] = { ok: false, attempts };
+  fetch_debug[key] = { ok: false };
   return null;
 }
 
@@ -729,7 +707,6 @@ Deno.serve(async (req) => {
         JSON.stringify({
           success: false,
           error: "Impossible de résoudre lat/lon depuis parcelle/commune.",
-          debug: resolved.debug,
         }),
         {
           status: 422,
@@ -765,12 +742,12 @@ Deno.serve(async (req) => {
       try {
         const j = await fetchJson(url, 2);
         coverage[key] = "ok";
-        fetch_debug[key] = { ok: true, url };
+        fetch_debug[key] = { ok: true };
         return j;
       } catch (e) {
         const msg = String((e as any)?.message ?? e);
         coverage[key] = isCoverageMissing(msg) ? "missing" : "error";
-        fetch_debug[key] = { ok: false, url, error: msg };
+        fetch_debug[key] = { ok: false, error: msg };
         return null;
       }
     }
@@ -962,13 +939,15 @@ Deno.serve(async (req) => {
         success: true,
         cached: false,
         data: out,
-        meta: { point: pt, cacheKey, resolve_debug: resolved.debug, fetch_debug },
+        meta: {
+          source: "risques-v1",
+        },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" } },
     );
-  } catch (e) {
+  } catch (_e) {
     return new Response(
-      JSON.stringify({ success: false, error: String((e as any)?.message ?? e) }),
+      JSON.stringify({ success: false, error: "Internal error" }),
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" },
