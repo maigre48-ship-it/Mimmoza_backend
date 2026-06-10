@@ -324,7 +324,7 @@ async function resolvePointWithDebug(payload: Payload): Promise<
       debug.steps.push({
         step: "rpc_get_parcelle_centroid",
         ok: false,
-        error: "supabase client is null (missing SUPABASE_URL / SERVICE_ROLE_KEY)",
+        error: "SUPABASE_CLIENT_UNAVAILABLE",
       });
     } else {
       try {
@@ -747,7 +747,7 @@ Deno.serve(async (req) => {
       } catch (e) {
         const msg = String((e as any)?.message ?? e);
         coverage[key] = isCoverageMissing(msg) ? "missing" : "error";
-        fetch_debug[key] = { ok: false, error: msg };
+        fetch_debug[key] = { ok: false };
         return null;
       }
     }

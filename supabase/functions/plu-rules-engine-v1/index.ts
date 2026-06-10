@@ -1031,7 +1031,6 @@ serve(async (req: Request): Promise<Response> => {
       JSON.stringify({
         success: false,
         error: "MISSING_ENV",
-        message: "SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY non configuré",
       }),
       { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
     );
@@ -1049,7 +1048,7 @@ serve(async (req: Request): Promise<Response> => {
       });
     }
 
-    console.log(`[plu-rules-engine-v1] Processing document: ${document_id}`);
+    console.log("[plu-rules-engine-v1] processing");
 
     // Créer le client Supabase avec service role
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -1062,16 +1061,12 @@ serve(async (req: Request): Promise<Response> => {
       .single();
 
     if (docError || !document) {
-      console.error(`[plu-rules-engine-v1] Document not found:`, docError);
+      console.error("[plu-rules-engine-v1] database error");
       return new Response(
-        JSON.stringify({ success: false, error: "DOCUMENT_NOT_FOUND", details: docError?.message }),
+        JSON.stringify({ success: false, error: "DOCUMENT_NOT_FOUND" }),
         { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
     }
-
-    console.log(
-      `[plu-rules-engine-v1] Document loaded: ${document.commune_insee} - ${document.commune_nom}`
-    );
 
     // 2) Robustifier l'accès aux zones_rulesets (supporter 2 formes)
     const rawJson = (document.raw_json as any) ?? null;
@@ -1086,13 +1081,12 @@ serve(async (req: Request): Promise<Response> => {
         JSON.stringify({
           success: false,
           error: "NO_ZONES_RULESETS",
-          message: "Le document ne contient pas de zones_rulesets à normaliser",
         }),
         { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
     }
 
-    console.log(`[plu-rules-engine-v1] Found ${zonesRulesets.length} zones to process`);
+    console.log("[plu-rules-engine-v1] zones loaded");
 
     // Supprimer les anciennes normalisations si overwrite
     if (overwrite) {
@@ -1102,9 +1096,9 @@ serve(async (req: Request): Promise<Response> => {
         .eq("document_id", document_id);
 
       if (deleteError) {
-        console.error(`[plu-rules-engine-v1] Error deleting old rules:`, deleteError);
+        console.error("[plu-rules-engine-v1] database error");
       } else {
-        console.log(`[plu-rules-engine-v1] Deleted old normalized rules`);
+        console.log("[plu-rules-engine-v1] overwrite cleanup");
       }
     }
 
@@ -1131,13 +1125,9 @@ serve(async (req: Request): Promise<Response> => {
       const zoneCode = zone.zone_code || "UNKNOWN";
       const zoneLibelle = zone.zone_libelle || null;
 
-      console.log(`[plu-rules-engine-v1] Processing zone: ${zoneCode}`);
+      console.log("[plu-rules-engine-v1] zone processed");
 
       const extraction = extractRulesFromZone(zone);
-
-      console.log(
-        `[plu-rules-engine-v1] Zone ${zoneCode}: confidence=${extraction.confidence_score}%, notes=${extraction.notes.length}`
-      );
 
       // 4) Conserver les notes dans rules.meta
       const rulesWithMeta: NormalizedRulesWithMeta = {
@@ -1170,9 +1160,9 @@ serve(async (req: Request): Promise<Response> => {
     const { error: insertError } = await supabase.from("plu_zone_rules_normalized").insert(rowsToInsert);
 
     if (insertError) {
-      console.error(`[plu-rules-engine-v1] Insert error:`, insertError);
+      console.error("[plu-rules-engine-v1] internal error");
       return new Response(
-        JSON.stringify({ success: false, error: "INSERT_ERROR", details: insertError.message }),
+        JSON.stringify({ success: false, error: "INSERT_ERROR" }),
         { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
     }
@@ -1182,27 +1172,22 @@ serve(async (req: Request): Promise<Response> => {
     const zonesWritten = rowsToInsert.length;
     const confidenceAvg = Math.round(results.reduce((sum, r) => sum + r.confidence_score, 0) / results.length);
 
-    console.log(`[plu-rules-engine-v1] Completed: ${zonesProcessed} zones, avg confidence: ${confidenceAvg}%`);
+    console.log("[plu-rules-engine-v1] completed");
 
     // Retourner le résumé
     return new Response(
       JSON.stringify({
         success: true,
-        document_id,
-        commune_insee: document.commune_insee,
-        commune_nom: document.commune_nom,
+        version: ENGINE_VERSION,
         zones_processed: zonesProcessed,
         zones_written: zonesWritten,
         confidence_avg: confidenceAvg,
-        source: ENGINE_VERSION,
-        zones_details: results,
       }),
       { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
     );
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    console.error(`[plu-rules-engine-v1] Unexpected error:`, message);
-    return new Response(JSON.stringify({ success: false, error: "INTERNAL_ERROR", message }), {
+  } catch (_error: unknown) {
+    console.error("[plu-rules-engine-v1] database error");
+    return new Response(JSON.stringify({ success: false, error: "INTERNAL_ERROR" }), {
       status: 500,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });

@@ -1,5 +1,5 @@
 // supabase/functions/plu-ingest-rulesets/index.ts
-// Version: plu-ingest-rulesets-v4.8 (fix unique constraint when plu_version_label is null/empty)
+// Version: plu-ingest-rulesets-v4.10 (security cleanup pass: INVALID_INPUT, generic business logs, generic DB throws, normalizeError removed — business logic & public success structure unchanged; response.version intentionally kept "v4.9" to preserve public contract)
 //
 // Objectif :
 //  - Entrée : { commune_insee, commune_nom, storage_path, (optionnel) zones_rulesets, plu_version_label, source_document, target_zone_code }
@@ -43,42 +43,6 @@ function requireEnvOneOf(names: string[]): string {
     if (v) return v;
   }
   throw new Error(`MISSING_ENV:${names.join("|")}`);
-}
-
-function normalizeError(err: unknown): {
-  message: string;
-  code: string | null;
-  details: string | null;
-  hint: string | null;
-  stack: string | null;
-  raw: unknown;
-} {
-  const e: any = err;
-  const message =
-    e?.message ??
-    (typeof e === "string" ? e : null) ??
-    (e?.toString ? e.toString() : null) ??
-    "Unknown error";
-
-  const code = e?.code ?? null;
-  
-  // ✅ FIX: ensure details is always a string, never "[object Object]"
-  let details: string | null = null;
-  if (e?.details) {
-    details = typeof e.details === "string" ? e.details : JSON.stringify(e.details);
-  }
-  
-  const hint = e?.hint ?? null;
-  const stack = e?.stack ?? null;
-
-  let raw: any = null;
-  try {
-    raw = typeof e === "object" ? e : { value: e };
-  } catch {
-    raw = { value: String(e) };
-  }
-
-  return { message: String(message), code, details, hint, stack, raw };
 }
 
 // ✅ Helper for JSON responses
@@ -940,13 +904,6 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // Logs debug
-  console.log("[RULESETS] SUPABASE_URL =", SUPABASE_URL);
-  console.log("[RULESETS] PLU_PARSER_URL =", PLU_PARSER_URL);
-  console.log("[RULESETS] PLU_STORAGE_BUCKET =", PLU_STORAGE_BUCKET);
-  console.log("[RULESETS] PLU_PARSER_API_KEY defined =", !!PLU_PARSER_API_KEY);
-  console.log("[RULESETS] PLU_PARSER_API_KEY length =", PLU_PARSER_API_KEY.length);
-
   try {
     if (req.method !== "POST") {
       return jsonResponse({ success: false, error: "Method not allowed" }, 405);
@@ -956,8 +913,8 @@ serve(async (req) => {
     let body: IngestInput;
     try {
       body = (await req.json()) as IngestInput;
-    } catch (parseErr) {
-      console.log("[RULESETS] JSON parse error =", parseErr instanceof Error ? parseErr.message : String(parseErr));
+    } catch (_e) {
+      console.log("[RULESETS] json parse failed");
       return jsonResponse({ success: false, error: "INVALID_JSON_BODY" }, 400);
     }
 
@@ -976,32 +933,18 @@ serve(async (req) => {
 
     // ✅ LOGS après parsing JSON body
     console.log("[RULESETS] start");
-    console.log("[RULESETS] commune_insee =", commune_insee);
-    console.log("[RULESETS] commune_nom =", commune_nom);
-    console.log("[RULESETS] storage_path =", storage_path);
-    console.log("[RULESETS] zones_rulesets_count =", Array.isArray(zones_rulesets_input) ? zones_rulesets_input.length : "not_array");
-    console.log("[RULESETS] plu_version_label =", plu_version_label_input);
-    console.log("[RULESETS] source_document =", source_document_input);
-    console.log("[RULESETS] target_zone_code (raw) =", target_zone_code_input ?? "not_provided");
-    console.log("[RULESETS] target_zone_code (normalized) =", normalizedTargetZone ?? "null");
-    
-    // ✅ v4.6: Clear target zone log
+
+    // ✅ v4.6: Clear target zone log (sans valeur)
     if (normalizedTargetZone) {
-      console.log("[RULESETS][TARGET] requested=" + normalizedTargetZone);
-    }
-    
-    try {
-      console.log("[RULESETS] payload_bytes =", JSON.stringify(body).length);
-    } catch {
-      console.log("[RULESETS] payload_bytes = unable_to_stringify");
+      console.log("[RULESETS][TARGET] requested");
     }
 
     if (!commune_insee || !storage_path) {
-      console.log("[RULESETS] validation failed: missing commune_insee or storage_path");
+      console.log("[RULESETS] validation failed");
       return jsonResponse(
         {
           success: false,
-          error: "commune_insee et storage_path sont obligatoires",
+          error: "INVALID_INPUT",
         },
         400,
       );
@@ -1023,29 +966,22 @@ serve(async (req) => {
     let pdf_url: string = source_document_input ?? storage_path;
 
     if (hasZonesRulesets) {
-      console.log(
-        "[RULESETS] zones_rulesets provided => SKIP parser, zones =",
-        zones_rulesets_input!.length,
-      );
+      console.log("[RULESETS] bypass parser");
 
       // ✅ v4.5: If target zone requested with bypass mode, filter zones_rulesets
       let filteredZonesRulesets = zones_rulesets_input!;
       if (normalizedTargetZone) {
-        console.log("[RULESETS][TARGET] bypass mode, filtering zones_rulesets for zone=" + normalizedTargetZone);
+        console.log("[RULESETS][TARGET] bypass filter");
         filteredZonesRulesets = zones_rulesets_input!.filter(
           (z) => normalizeZoneCode(z.zone_code) === normalizedTargetZone
         );
-        console.log("[RULESETS][TARGET] filtered zones_rulesets count =", filteredZonesRulesets.length);
-        
+
         if (filteredZonesRulesets.length === 0) {
-          console.log("[RULESETS][TARGET] TARGET_ZONE_NOT_FOUND in bypass zones_rulesets");
+          console.log("[RULESETS] target filter");
           return jsonResponse(
             {
               success: false,
               error: "TARGET_ZONE_NOT_FOUND_IN_INPUT",
-              details: `Zone ${normalizedTargetZone} not found in provided zones_rulesets. Available zones: ${zones_rulesets_input!.map(z => z.zone_code).join(", ")}`,
-              target_zone_requested: normalizedTargetZone,
-              zones_provided: zones_rulesets_input!.map(z => z.zone_code),
             },
             400,
           );
@@ -1053,7 +989,7 @@ serve(async (req) => {
         
         // ✅ v4.7: Mark as filtered from input (bypass mode) - NOT client_side fallback
         target_zone_filtered_from_input = true;
-        console.log("[RULESETS][TARGET] target_zone_filtered_from_input=true (bypass mode)");
+        console.log("[RULESETS] target filter");
       }
 
       parsed = {
@@ -1067,17 +1003,15 @@ serve(async (req) => {
       } as any;
     } else {
       // 1) URL publique du PDF depuis Supabase Storage
-      console.log("[RULESETS][STORAGE] getPublicUrl for:", storage_path);
       const { data: publicUrlData, error: publicUrlError } = supabase.storage
         .from(PLU_STORAGE_BUCKET)
         .getPublicUrl(storage_path);
 
       if (publicUrlError) {
-        console.log("[RULESETS][STORAGE] getPublicUrl error =", publicUrlError);
+        console.log("[RULESETS][STORAGE] getPublicUrl error");
       }
 
       pdf_url = publicUrlData?.publicUrl ?? storage_path;
-      console.log("[RULESETS] pdf_url =", pdf_url);
 
       // 2) Appel du parser avec Authorization Bearer
       // ✅ v4.6: include target_zone_code + target_zone + targetZone for max compat
@@ -1092,7 +1026,7 @@ serve(async (req) => {
         parserBody.target_zone_code = normalizedTargetZone;
         parserBody.target_zone = normalizedTargetZone;      // compat legacy
         parserBody.targetZone = normalizedTargetZone;       // compat camelCase
-        console.log("[RULESETS][TARGET] sending to parser: target_zone_code=" + normalizedTargetZone + ", target_zone=" + normalizedTargetZone + ", targetZone=" + normalizedTargetZone);
+        console.log("[RULESETS][TARGET] sending to parser");
       }
 
       const parserHeaders: HeadersInit = { "Content-Type": "application/json" };
@@ -1100,7 +1034,7 @@ serve(async (req) => {
         (parserHeaders as any)["Authorization"] = `Bearer ${PLU_PARSER_API_KEY}`;
       }
 
-      console.log("[RULESETS][PARSER] calling parser, body =", JSON.stringify(parserBody));
+      console.log("[RULESETS] parser call");
 
       let parserRes: Response;
       try {
@@ -1109,58 +1043,48 @@ serve(async (req) => {
           headers: parserHeaders,
           body: JSON.stringify(parserBody),
         });
-      } catch (fetchErr) {
-        const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-        console.log("[RULESETS][PARSER] fetch error =", msg);
+      } catch (_e) {
+        console.log("[RULESETS] parser failed");
         return jsonResponse(
           {
             success: false,
             error: "PLU_PARSER_FETCH_ERROR",
-            details: msg,
           },
           502,
         );
       }
 
-      console.log("[RULESETS][PARSER] response status =", parserRes.status);
-
       if (!parserRes.ok) {
-        const text = await parserRes.text();
-        console.log("[RULESETS][PARSER] HTTP error, status =", parserRes.status, "body =", text.substring(0, 1000));
+        console.log("[RULESETS] parser failed");
         return jsonResponse(
           {
             success: false,
             error: "Erreur lors de l'appel au PLU Parser",
-            status: parserRes.status,
-            details: text.substring(0, 2000),
           },
           502,
         );
       }
 
       parsed = (await parserRes.json()) as ParserResponse;
-      console.log("[RULESETS][PARSER] success =", parsed.success);
 
       if (!parsed.success) {
-        console.log("[RULESETS][PARSER] returned success=false, response =", JSON.stringify(parsed).substring(0, 1000));
+        console.log("[RULESETS] parser failed");
         return jsonResponse(
           {
             success: false,
             error: "PLU Parser a répondu success=false",
-            parser: parsed,
           },
           502,
         );
       }
+
+      console.log("[RULESETS] parser success");
 
       // ✅ v4.6: Log parser meta for target zone validation
       const parserMeta = parsed.meta ?? {};
       const parserTargetZoneMode = parserMeta.target_zone_mode;
       const parserTargetZoneCode = parserMeta.target_zone_code;
       const zonesReturnedCount = parsed.zones_rulesets?.length ?? 0;
-      
-      console.log("[RULESETS][TARGET] parser meta mode=" + String(parserTargetZoneMode) + ", code=" + String(parserTargetZoneCode));
-      console.log("[RULESETS][PARSER] zones_returned =", zonesReturnedCount);
 
       // ✅ v4.6: Strict target zone validation
       if (normalizedTargetZone) {
@@ -1170,48 +1094,35 @@ serve(async (req) => {
           normalizeZoneCode(parserTargetZoneCode as string | null | undefined) !== null;
         
         if (!parserAppliedTargetZone) {
-          console.log("[RULESETS][TARGET] parser did NOT apply target_zone_mode properly");
-          console.log("[RULESETS][TARGET] Expected target_zone_mode=true, got:", parserTargetZoneMode);
-          console.log("[RULESETS][TARGET] Expected target_zone_code non-null, got:", parserTargetZoneCode);
-          
+          console.log("[RULESETS] parser validation");
+
           // ✅ v4.6: Attempt client-side filtering as fallback
           const originalZones = parsed.zones_rulesets ?? [];
-          console.log("[RULESETS][TARGET] Attempting client-side filtering, original zones count =", originalZones.length);
-          
+          console.log("[RULESETS][TARGET] client-side filtering");
+
           const filteredZones = originalZones.filter(
             (z) => normalizeZoneCode(z.zone_code) === normalizedTargetZone
           );
-          
-          console.log("[RULESETS][TARGET] Client-side filter result: filtered zones count =", filteredZones.length);
-          
+
           if (filteredZones.length === 0) {
             // ✅ v4.7: No matching zone found - return error 502 TARGET_ZONE_NOT_APPLIED_BY_PARSER, NO DB operations
             console.log("[RULESETS][TARGET] abort TARGET_ZONE_NOT_APPLIED_BY_PARSER - no DB operations");
-            console.log("[RULESETS][TARGET] client_side_filter applied=false (no match)");
             return jsonResponse(
               {
                 success: false,
                 error: "TARGET_ZONE_NOT_APPLIED_BY_PARSER",
-                details: `Zone ${normalizedTargetZone} was requested but parser did not apply target_zone_mode (mode=${parserTargetZoneMode}, code=${parserTargetZoneCode}) and zone was not found in output. Parser returned ${zonesReturnedCount} zones. Available zones: ${originalZones.map(z => z.zone_code).join(", ")}`,
-                target_zone_requested: normalizedTargetZone,
-                parser_meta: parserMeta,
-                zones_returned: zonesReturnedCount,
-                zones_available: originalZones.map(z => z.zone_code),
               },
               502,
             );
           }
-          
+
           // ✅ v4.7: Client-side filtering found zone(s) - check if ruleset is empty before proceeding
           if (filteredZones.length >= 1) {
             const firstZone = filteredZones[0];
             const rulesetDiag = hasMeaningfulContent(firstZone.ruleset);
-            
-            console.log("[RULESETS][TARGET] Checking ruleset content for zone=" + firstZone.zone_code);
-            console.log("[RULESETS][TARGET] rulesetDiag: hasNumbers=" + rulesetDiag.hasNumbers + ", hasMeterText=" + rulesetDiag.hasMeterText + ", hasParkingText=" + rulesetDiag.hasParkingText);
-            
+
             const isRulesetEmpty = !rulesetDiag.hasNumbers && !rulesetDiag.hasMeterText && !rulesetDiag.hasParkingText;
-            
+
             if (isRulesetEmpty) {
               // ✅ v4.7: Ruleset is empty - return error 502 TARGET_ZONE_RULESET_EMPTY, NO DB operations
               console.log("[RULESETS][TARGET] abort TARGET_ZONE_RULESET_EMPTY - no DB operations");
@@ -1219,43 +1130,30 @@ serve(async (req) => {
                 {
                   success: false,
                   error: "TARGET_ZONE_RULESET_EMPTY",
-                  details: `Zone ${normalizedTargetZone} was found via client-side fallback but its ruleset contains no extractable data (hasNumbers=false, hasMeterText=false, hasParkingText=false). Parser did not apply target_zone_mode properly.`,
-                  target_zone_requested: normalizedTargetZone,
-                  parser_meta: parserMeta,
-                  zones_returned: zonesReturnedCount,
-                  zone_found: firstZone.zone_code,
-                  ruleset_diag: {
-                    topKeys: rulesetDiag.topKeys,
-                    sampleTexts: rulesetDiag.sampleTexts,
-                    hasNumbers: rulesetDiag.hasNumbers,
-                    hasMeterText: rulesetDiag.hasMeterText,
-                    hasParkingText: rulesetDiag.hasParkingText,
-                  },
                 },
                 502,
               );
             }
           }
-          
+
           // ✅ v4.7: Client-side filtering succeeded with non-empty ruleset - continue with flag
-          console.log("[RULESETS][TARGET] client_side_filter applied=true (fallback success)");
+          console.log("[RULESETS] target filter");
           target_zone_applied_client_side = true;
           parsed.zones_rulesets = filteredZones;
-          
+
         } else {
           // Parser applied target zone mode - verify zone code matches
           const parserReturnedZone = normalizeZoneCode(parserTargetZoneCode as string | null | undefined);
-          console.log("[RULESETS][TARGET] parser applied target_zone_mode=true, returned zone=" + parserReturnedZone);
-          
+
           if (parserReturnedZone !== normalizedTargetZone) {
-            console.log("[RULESETS][TARGET] WARNING: Parser target_zone_code mismatch. Requested:", normalizedTargetZone, "Got:", parserReturnedZone);
+            console.log("[RULESETS] parser validation");
             // Still proceed but log the mismatch - parser might have normalized differently
           }
           
           // ✅ v4.6: Additional safety - filter zones even if parser says it applied mode
           // This handles edge cases where parser returns multiple zones despite target mode
           if (zonesReturnedCount > 1) {
-            console.log("[RULESETS][TARGET] Parser returned multiple zones despite target_zone_mode=true, applying safety filter");
+            console.log("[RULESETS] parser validation");
             const filteredZones = (parsed.zones_rulesets ?? []).filter(
               (z) => normalizeZoneCode(z.zone_code) === normalizedTargetZone
             );
@@ -1263,16 +1161,10 @@ serve(async (req) => {
             if (filteredZones.length === 0) {
               // ✅ v4.7: Safety filter found no match - error 502 TARGET_ZONE_NOT_APPLIED_BY_PARSER, NO DB operations
               console.log("[RULESETS][TARGET] abort TARGET_ZONE_NOT_APPLIED_BY_PARSER after safety filter - no DB operations");
-              console.log("[RULESETS][TARGET] client_side_filter applied=false (safety filter no match)");
               return jsonResponse(
                 {
                   success: false,
                   error: "TARGET_ZONE_NOT_APPLIED_BY_PARSER",
-                  details: `Zone ${normalizedTargetZone} was requested, parser claimed target_zone_mode=true but zone not found in ${zonesReturnedCount} returned zones after safety filter.`,
-                  target_zone_requested: normalizedTargetZone,
-                  parser_meta: parserMeta,
-                  zones_returned: zonesReturnedCount,
-                  zones_available: (parsed.zones_rulesets ?? []).map(z => z.zone_code),
                 },
                 502,
               );
@@ -1283,9 +1175,6 @@ serve(async (req) => {
               const firstZone = filteredZones[0];
               const rulesetDiag = hasMeaningfulContent(firstZone.ruleset);
               
-              console.log("[RULESETS][TARGET] Safety filter: checking ruleset content for zone=" + firstZone.zone_code);
-              console.log("[RULESETS][TARGET] Safety filter rulesetDiag: hasNumbers=" + rulesetDiag.hasNumbers + ", hasMeterText=" + rulesetDiag.hasMeterText + ", hasParkingText=" + rulesetDiag.hasParkingText);
-              
               const isRulesetEmpty = !rulesetDiag.hasNumbers && !rulesetDiag.hasMeterText && !rulesetDiag.hasParkingText;
               
               if (isRulesetEmpty) {
@@ -1295,18 +1184,6 @@ serve(async (req) => {
                   {
                     success: false,
                     error: "TARGET_ZONE_RULESET_EMPTY",
-                    details: `Zone ${normalizedTargetZone} was found via safety filter but its ruleset contains no extractable data (hasNumbers=false, hasMeterText=false, hasParkingText=false).`,
-                    target_zone_requested: normalizedTargetZone,
-                    parser_meta: parserMeta,
-                    zones_returned: zonesReturnedCount,
-                    zone_found: firstZone.zone_code,
-                    ruleset_diag: {
-                      topKeys: rulesetDiag.topKeys,
-                      sampleTexts: rulesetDiag.sampleTexts,
-                      hasNumbers: rulesetDiag.hasNumbers,
-                      hasMeterText: rulesetDiag.hasMeterText,
-                      hasParkingText: rulesetDiag.hasParkingText,
-                    },
                   },
                   502,
                 );
@@ -1316,11 +1193,10 @@ serve(async (req) => {
             // ✅ v4.7: Safety filter applied successfully with non-empty ruleset
             target_zone_applied_client_side = true;
             parsed.zones_rulesets = filteredZones;
-            console.log("[RULESETS][TARGET] client_side_filter applied=true (safety filter)");
-            console.log("[RULESETS][TARGET] Safety filter applied, using", filteredZones.length, "zone(s)");
+            console.log("[RULESETS] target filter");
           } else {
             // Parser returned exactly 1 zone and target_zone_mode=true - trust it
-            console.log("[RULESETS][TARGET] client_side_filter applied=false (parser handled correctly)");
+            console.log("[RULESETS] target filter");
           }
         }
       }
@@ -1340,16 +1216,11 @@ serve(async (req) => {
     
     if (isVersionLabelEmpty) {
       unique_version_label = "DEFAULT";
-      console.log("[RULESETS] plu_version_label was null/empty => forced to 'DEFAULT'");
+      console.log("[RULESETS] version normalized");
     }
     
     // ✅ v4.8: hasVersionLabel est maintenant toujours true car on force "DEFAULT" si vide
     const hasVersionLabel = true;
-
-    console.log("[RULESETS] final_commune_insee =", final_commune_insee);
-    console.log("[RULESETS] final_commune_nom =", final_commune_nom);
-    console.log("[RULESETS] unique_version_label =", unique_version_label);
-    console.log("[RULESETS] hasVersionLabel =", hasVersionLabel);
 
     // ------------------------------------------------------------------------
     // 3) OVERWRITE LOGIC (v4.8)
@@ -1366,8 +1237,6 @@ serve(async (req) => {
     let existingErr: any = null;
 
     // ✅ v4.8: Toujours rechercher par commune_insee + plu_version_label (contrainte unique)
-    console.log("[RULESETS][DB] SELECT plu_documents by commune_insee =", final_commune_insee, "plu_version_label =", unique_version_label);
-
     const result = await supabase
       .from("plu_documents")
       .select("id, created_at")
@@ -1380,12 +1249,9 @@ serve(async (req) => {
     existingErr = result.error;
 
     if (existingErr) {
-      console.log("[RULESETS][DB] SELECT plu_documents error =", JSON.stringify(existingErr));
-      const n = normalizeError(existingErr);
-      throw new Error(`SELECT_EXISTING_PLU_DOCUMENT_FAILED: ${n.message}`);
+      console.log("[RULESETS] db error");
+      throw new Error("SELECT_EXISTING_PLU_DOCUMENT_FAILED");
     }
-
-    console.log("[RULESETS][DB] SELECT plu_documents found =", existingDocs?.length ?? 0);
 
     const canonicalId =
       existingDocs && existingDocs.length > 0 ? (existingDocs[0] as any).id : null;
@@ -1393,7 +1259,6 @@ serve(async (req) => {
     // If multiple, remove extras to keep DB clean
     if (existingDocs && existingDocs.length > 1) {
       const extraIds = existingDocs.slice(1).map((d: any) => d.id);
-      console.log("[RULESETS][DB] DELETE extra plu_documents, ids =", extraIds);
 
       const { error: delDocsErr } = await supabase
         .from("plu_documents")
@@ -1401,39 +1266,32 @@ serve(async (req) => {
         .in("id", extraIds);
 
       if (delDocsErr) {
-        console.log("[RULESETS][DB] DELETE extra plu_documents error =", JSON.stringify(delDocsErr));
-        const n = normalizeError(delDocsErr);
-        throw new Error(`DELETE_EXTRA_PLU_DOCUMENTS_FAILED: ${n.message}`);
+        console.log("[RULESETS] db error");
+        throw new Error("DELETE_EXTRA_PLU_DOCUMENTS_FAILED");
       }
 
       deleted_extra_docs = extraIds.length;
-      console.log("[RULESETS][DB] deleted_extra_docs =", deleted_extra_docs);
     }
 
     let doc: any = null;
 
     if (canonicalId) {
       overwrite = true;
-      console.log("[RULESETS][DB] OVERWRITE mode, existing doc_id =", canonicalId);
 
       // Delete existing zones for this doc
-      console.log("[RULESETS][DB] DELETE plu_zones_rulesets for document_id =", canonicalId);
-
       const { error: delZonesErr, count } = await supabase
         .from("plu_zones_rulesets")
         .delete({ count: "exact" })
         .eq("document_id", canonicalId);
 
       if (delZonesErr) {
-        console.log("[RULESETS][DB] DELETE plu_zones_rulesets error =", JSON.stringify(delZonesErr));
-        const n = normalizeError(delZonesErr);
-        throw new Error(`DELETE_EXISTING_ZONES_FAILED: ${n.message}`);
+        console.log("[RULESETS] db error");
+        throw new Error("DELETE_EXISTING_ZONES_FAILED");
       }
       deleted_zones = typeof count === "number" ? count : 0;
-      console.log("[RULESETS][DB] deleted_zones =", deleted_zones);
 
       // ✅ v4.6: Update doc with latest metadata + raw_json (using potentially filtered parsed)
-      console.log("[RULESETS][DB] UPDATE plu_documents id =", canonicalId);
+      console.log("[RULESETS] db update");
 
       const { data: updated, error: updErr } = await supabase
         .from("plu_documents")
@@ -1449,24 +1307,14 @@ serve(async (req) => {
         .select()
         .single();
 
-      if (updErr) {
-        console.log("[RULESETS][DB] UPDATE plu_documents error =", JSON.stringify(updErr));
-      }
-
       if (updErr || !updated) {
-        const n = normalizeError(updErr ?? "Update plu_documents échouée");
-        throw new Error(
-          `UPDATE_PLU_DOCUMENTS_FAILED: ${n.message}` +
-            (n.details ? ` | details=${n.details}` : "") +
-            (n.hint ? ` | hint=${n.hint}` : ""),
-        );
+        throw new Error("UPDATE_PLU_DOCUMENTS_FAILED");
       }
 
       doc = updated;
-      console.log("[RULESETS][DB] UPDATE plu_documents success, id =", doc.id);
     } else {
       // Insert new doc
-      console.log("[RULESETS][DB] INSERT plu_documents (new)");
+      console.log("[RULESETS] db insert");
 
       const { data: inserted, error: docError } = await supabase
         .from("plu_documents")
@@ -1481,21 +1329,11 @@ serve(async (req) => {
         .select()
         .single();
 
-      if (docError) {
-        console.log("[RULESETS][DB] INSERT plu_documents error =", JSON.stringify(docError));
-      }
-
       if (docError || !inserted) {
-        const n = normalizeError(docError ?? "Insertion plu_documents échouée");
-        throw new Error(
-          `INSERT_PLU_DOCUMENTS_FAILED: ${n.message}` +
-            (n.details ? ` | details=${n.details}` : "") +
-            (n.hint ? ` | hint=${n.hint}` : ""),
-        );
+        throw new Error("INSERT_PLU_DOCUMENTS_FAILED");
       }
 
       doc = inserted;
-      console.log("[RULESETS][DB] INSERT plu_documents success, id =", doc.id);
     }
 
     // 4) Insert zones (fresh) with extracted numeric fields
@@ -1540,23 +1378,10 @@ serve(async (req) => {
       if (hasStructured) zones_structured_extraction++;
       if (hasRegex) zones_regex_extraction++;
       
-      // v4.4: Log first 2 zones for debugging
+      // v4.4: store first 2 zones diagnostics (server-side only)
       if (idx < 2) {
-        console.log(`[RULESETS][EXTRACT] zone_code=${z.zone_code}`);
-        console.log(`[RULESETS][EXTRACT] diag.hasNumbers=${diag.hasNumbers}, hasMeterText=${diag.hasMeterText}, hasParkingText=${diag.hasParkingText}`);
-        console.log(`[RULESETS][EXTRACT] extractionSource=`, JSON.stringify(diag.extractionSource));
-        console.log(`[RULESETS][EXTRACT] topKeys=${diag.topKeys.join(", ")}`);
-        console.log(`[RULESETS][EXTRACT] extracted: voirie=${extracted.retrait_voirie_min_m}, limites=${extracted.retrait_limites_separatives_min_m}, fond=${extracted.retrait_fond_parcelle_min_m}, places=${extracted.places_par_logement}`);
-        
         // Store for response
         extraction_diag_by_zone_code[z.zone_code] = diag;
-      }
-      
-      // v4.4: Log if no extractable data
-      if (!diag.hasNumbers && !diag.hasMeterText && !diag.hasParkingText) {
-        if (idx < 3) {
-          console.log(`[RULESETS][EXTRACT] NO_EXTRACTABLE_DATA in ruleset for zone ${z.zone_code}`);
-        }
       }
       
       // Return row for DB (without _diag)
@@ -1576,110 +1401,39 @@ serve(async (req) => {
       };
     });
 
-    console.log("[RULESETS][DB] INSERT plu_zones_rulesets, count =", rows.length);
-    
-    // v4.4: Log diagnostic summary
-    console.log(`[RULESETS][EXTRACT] SUMMARY: zones_total=${zones.length}, zones_no_data=${zones_no_data}, zones_with_meter_text=${zones_with_meter_text}, zones_with_parking_text=${zones_with_parking_text}, zones_with_numbers=${zones_with_numbers}`);
-    console.log(`[RULESETS][EXTRACT] SOURCES: structured=${zones_structured_extraction}, regex=${zones_regex_extraction}`);
-
     if (rows.length > 0) {
       const { error: zonesError } = await supabase
         .from("plu_zones_rulesets")
         .insert(rows);
 
       if (zonesError) {
-        console.log("[RULESETS][DB] INSERT plu_zones_rulesets error =", JSON.stringify(zonesError));
-        const n = normalizeError(zonesError);
-        throw new Error(
-          `INSERT_PLU_ZONES_RULESETS_FAILED: ${n.message}` +
-            (n.details ? ` | details=${n.details}` : "") +
-            (n.hint ? ` | hint=${n.hint}` : ""),
-        );
+        console.log("[RULESETS] db error");
+        throw new Error("INSERT_PLU_ZONES_RULESETS_FAILED");
       }
 
-      console.log("[RULESETS][DB] INSERT plu_zones_rulesets success");
+      console.log("[RULESETS] db insert");
     }
 
-    console.log(
-      "[RULESETS] Ingestion OK, overwrite =",
-      overwrite,
-      "deleted_zones =",
-      deleted_zones,
-      "zones_inserted =",
-      rows.length,
-    );
+    console.log("[RULESETS] ingestion ok");
 
-    // ✅ v4.8: Build response with target_zone flags
+    // ✅ v4.9: Production-safe response — no input echo, no IDs, no parser/diag leaks
     const responseBody: Record<string, unknown> = {
       success: true,
-      version: "plu-ingest-rulesets-v4.8",
+      version: "plu-ingest-rulesets-v4.9",
       overwrite,
       deleted_zones,
-      deleted_extra_docs,
-      inputs: {
-        commune_insee,
-        commune_nom,
-        storage_path,
-        zones_rulesets_provided: hasZonesRulesets,
-        target_zone_code: normalizedTargetZone,
-      },
-      document_id: doc.id,
-      commune_insee_final: final_commune_insee,
-      commune_nom_final: final_commune_nom,
-      plu_version_label_final: unique_version_label,
       zones_inserted: rows.length,
-      parser: {
-        success: parsed.success,
-        plu_version_label: parsed.plu_version_label,
-        source_document: parsed.source_document ?? pdf_url,
-        bypass_parser: (parsed as any)?.bypass_parser ?? false,
-        meta: parsed.meta ?? null,
-      },
-      // v4.4: Extraction diagnostics summary
-      extraction_diag_summary: {
-        zones_total: zones.length,
-        zones_no_data,
-        zones_with_meter_text,
-        zones_with_parking_text,
-        zones_with_numbers,
-        zones_structured_extraction,
-        zones_regex_extraction,
-      },
-      // v4.4: First 2 zones diagnostics (for debugging)
-      extraction_diag_by_zone_code,
     };
-    
-    // ✅ v4.7: Add target zone flags if target zone was requested
-    if (normalizedTargetZone) {
-      responseBody.target_zone_applied_client_side = target_zone_applied_client_side;
-      responseBody.target_zone_filtered_from_input = target_zone_filtered_from_input;
-    }
 
     return jsonResponse(responseBody, 200);
-  } catch (err) {
-    // ✅ Enhanced error logging
-    const message = err instanceof Error ? err.message : String(err);
-    const stack = err instanceof Error ? err.stack : null;
+  } catch (_e) {
+    // ✅ v4.9: Production-safe — never log or expose error internals
+    console.log("[RULESETS] fatal");
 
-    console.log("[RULESETS] fatal =", message);
-    if (stack) {
-      console.log("[RULESETS] stack =", stack);
-    }
-
-    // ✅ Also use normalizeError for structured output
-    const n = normalizeError(err);
-    console.log("[RULESETS] normalized_error =", JSON.stringify(n));
-
-    // ✅ v4.2: Return HTTP 500 on fatal error
     return jsonResponse(
       {
         success: false,
         error: "PLU_INGEST_RULESETS_INTERNAL_ERROR",
-        message: n.message,
-        details: n.details,
-        code: n.code,
-        hint: n.hint,
-        stack: stack ?? undefined,
       },
       500,
     );

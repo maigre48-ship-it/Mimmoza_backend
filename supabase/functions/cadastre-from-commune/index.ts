@@ -72,7 +72,7 @@ serve(async (req) => {
           success: false,
           version: VERSION,
           error: "INVALID_COMMUNE_INSEE",
-          details: "commune_insee doit être une chaîne INSEE à 5 chiffres (ex: 64065).",
+          details: "INVALID_INPUT",
           received: commune_insee ?? null,
         },
         400,
@@ -101,9 +101,9 @@ serve(async (req) => {
         let geojson;
         try {
           geojson = JSON.parse(text);
-        } catch (e) {
+        } catch (_e) {
           // Cache corrompu -> on force un re-fetch Etalab
-          console.error("[cadastre-from-commune] Cache JSON parse error:", e);
+          console.error("[cadastre-from-commune] Cache JSON parse error");
           cacheStatus = "ERROR";
           geojson = null;
         }
@@ -127,8 +127,8 @@ serve(async (req) => {
         // On considère que c'est un MISS (pas bloquant).
         cacheStatus = "MISS";
       }
-    } catch (e) {
-      console.error("[cadastre-from-commune] Storage download error:", e);
+    } catch (_e) {
+      console.error("[cadastre-from-commune] Storage download error");
       cacheStatus = "ERROR";
       // On continue : fallback Etalab
     }
@@ -136,10 +136,10 @@ serve(async (req) => {
     // -----------------------------------------------------------------------
     // 2) Fallback Etalab (.json.gz), décompression + parsing JSON
     // -----------------------------------------------------------------------
-    const url =
+    const etalabUrl =
       `https://cadastre.data.gouv.fr/data/etalab-cadastre/latest/geojson/communes/${dep}/${insee}/cadastre-${insee}-parcelles.json.gz`;
 
-    const r = await fetch(url);
+    const r = await fetch(etalabUrl);
     if (!r.ok) {
       return jsonResp(
         {
@@ -147,7 +147,6 @@ serve(async (req) => {
           version: VERSION,
           error: "ETALAB_HTTP_ERROR",
           status: r.status,
-          url,
         },
         502,
       );
@@ -160,14 +159,14 @@ serve(async (req) => {
     let text: string;
     try {
       text = await gunzipToText(gzBytes);
-    } catch (decompressErr) {
-      console.error("[cadastre-from-commune] GZIP decompress error:", decompressErr);
+    } catch (_decompressErr) {
+      console.error("[cadastre-from-commune] GZIP decompress error");
       return jsonResp(
         {
           success: false,
           version: VERSION,
           error: "GZIP_DECOMPRESS_ERROR",
-          details: String(decompressErr),
+          details: "DECOMPRESS_ERROR",
         },
         500,
       );
@@ -176,14 +175,13 @@ serve(async (req) => {
     let geojson: unknown;
     try {
       geojson = JSON.parse(text);
-    } catch (e) {
+    } catch (_e) {
       return jsonResp(
         {
           success: false,
           version: VERSION,
           error: "JSON_PARSE_ERROR",
-          details: String(e),
-          receivedSnippet: text.substring(0, 200),
+          details: "PARSE_ERROR",
         },
         500,
       );
@@ -204,10 +202,10 @@ serve(async (req) => {
         });
 
       if (upErr) {
-        console.error("[cadastre-from-commune] Storage upload error:", upErr);
+        console.error("[cadastre-from-commune] Storage upload error");
       }
-    } catch (e) {
-      console.error("[cadastre-from-commune] Storage upload exception:", e);
+    } catch (_e) {
+      console.error("[cadastre-from-commune] Storage upload exception");
     }
 
     return jsonResp({
@@ -218,17 +216,17 @@ serve(async (req) => {
         status: cacheStatus === "MISS" ? "MISS_SAVED" : "ERROR_SAVED",
         bucket: CADASTRE_BUCKET,
         path: cachePath,
-        source_url: url,
+        source_url: null,
       },
       featureCollection: geojson,
     });
-  } catch (e) {
+  } catch (_e) {
     return jsonResp(
       {
         success: false,
         version: VERSION,
         error: "UNEXPECTED_ERROR",
-        details: String(e),
+        details: "UNEXPECTED_ERROR",
       },
       500,
     );

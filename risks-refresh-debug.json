@@ -1,0 +1,63 @@
+﻿{
+    "IsMutuallyAuthenticated":  false,
+    "Cookies":  [
+                    {
+                        "Comment":  "",
+                        "CommentUri":  null,
+                        "HttpOnly":  true,
+                        "Discard":  false,
+                        "Domain":  ".supabase.co",
+                        "Expired":  true,
+                        "Expires":  "\/Date(1770717065000)\/",
+                        "Name":  "__cf_bm",
+                        "Path":  "/",
+                        "Port":  "",
+                        "Secure":  true,
+                        "TimeStamp":  "\/Date(1770715265744)\/",
+                        "Value":  "4tV8RYZxjnqOsY0msyD.trau7FJ9OOCBLJTJ0urfBV4-1770715265-1.0.1.1-Q.qOTK0ktY3GSckyJssVU4SkK_nEr4P52YXTsk8c46aiWy3uYWI5Y_BJPg7rNxj.kWjynoA5HVW9L60Zw1lXYhSKdFBRq8MAEeWz.tb1aDk",
+                        "Version":  0
+                    }
+                ],
+    "Headers":  [
+                    "Transfer-Encoding",
+                    "Connection",
+                    "CF-Ray",
+                    "CF-Cache-Status",
+                    "Access-Control-Allow-Origin",
+                    "Strict-Transport-Security",
+                    "Vary",
+                    "access-control-allow-headers",
+                    "access-control-allow-methods",
+                    "sb-gateway-version",
+                    "sb-project-ref",
+                    "sb-request-id",
+                    "x-deno-execution-id",
+                    "x-sb-edge-region",
+                    "x-served-by",
+                    "alt-svc",
+                    "Content-Type",
+                    "Date",
+                    "Set-Cookie",
+                    "Server"
+                ],
+    "SupportsHeaders":  true,
+    "ContentLength":  -1,
+    "ContentEncoding":  "",
+    "ContentType":  "application/json",
+    "CharacterSet":  "",
+    "Server":  "cloudflare",
+    "LastModified":  "\/Date(1770727528628)\/",
+    "StatusCode":  400,
+    "StatusDescription":  "Bad Request",
+    "ProtocolVersion":  {
+                            "Major":  1,
+                            "Minor":  1,
+                            "Build":  -1,
+                            "Revision":  -1,
+                            "MajorRevision":  -1,
+                            "MinorRevision":  -1
+                        },
+    "ResponseUri":  "https://fwvrqngbafqdaekbdfnm.supabase.co/functions/v1/banque-committee-report-v1",
+    "Method":  "POST",
+    "IsFromCache":  false
+}

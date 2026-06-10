@@ -1,14 +1,12 @@
 // supabase/functions/plu-from-parcelle/index.ts
-// Version : plu-from-parcelle-v1 (robuste, surface optionnelle – source finale côté front)
+// Version : plu-from-parcelle-v1.1 — security hardening, no detailed logs/responses
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get(
-  "SUPABASE_SERVICE_ROLE_KEY",
-)!;
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -24,20 +22,17 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-// 🔍 Vérifie la cohérence entre parcel_id et code INSEE
 function isParcelConsistentWithCommune(
   parcelId: string | null,
   communeInsee: string | null,
 ): boolean {
   if (!parcelId || !communeInsee) return true;
 
-  // Pour les parcelles PCI : les 5 premiers caractères = code INSEE
   if (communeInsee.length === 5) {
     const parcelCommune = parcelId.slice(0, 5);
     if (parcelCommune !== communeInsee) return false;
   }
 
-  // Vérification minimale sur le département (2 premiers caractères)
   const expectedDept = communeInsee.slice(0, 2);
   const parcelDept = parcelId.slice(0, 2);
 
@@ -49,48 +44,45 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  try {
-    if (req.method !== "POST") {
-      return jsonResponse({ success: false, error: "Method not allowed" }, 405);
-    }
+  if (req.method !== "POST") {
+    return jsonResponse({ success: false, error: "METHOD_NOT_ALLOWED" }, 405);
+  }
 
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.error("[plu-from-parcelle] missing environment configuration");
+    return jsonResponse({ success: false, error: "MISSING_ENV" }, 500);
+  }
+
+  try {
     const body = await req.json().catch(() => null);
 
     if (!body) {
-      return jsonResponse(
-        { success: false, error: "Invalid JSON body" },
-        400,
-      );
+      return jsonResponse({ success: false, error: "INVALID_JSON_BODY" }, 400);
     }
 
-    const commune_insee: string | undefined = body.commune_insee;
-    const commune_nom: string | undefined = body.commune_nom;
-    const parcel_id: string | undefined = body.parcel_id;
+    const commune_insee =
+      typeof body.commune_insee === "string" ? body.commune_insee.trim() : "";
+
+    const commune_nom =
+      typeof body.commune_nom === "string" ? body.commune_nom.trim() : null;
+
+    const parcel_id =
+      typeof body.parcel_id === "string" ? body.parcel_id.trim() : "";
 
     if (!commune_insee || !parcel_id) {
-      return jsonResponse(
-        {
-          success: false,
-          error: "Missing fields: commune_insee, parcel_id",
-        },
-        400,
-      );
+      return jsonResponse({ success: false, error: "INVALID_INPUT" }, 400);
     }
 
-    // 1️⃣ Vérification basique de cohérence commune / parcelle
     if (!isParcelConsistentWithCommune(parcel_id, commune_insee)) {
       return jsonResponse(
         {
           success: false,
-          error: "Parcel/commune inconsistent",
-          details:
-            "Le numéro de parcelle ne correspond pas au code INSEE indiqué.",
+          error: "PARCEL_COMMUNE_INCONSISTENT",
         },
         400,
       );
     }
 
-    // 2️⃣ Parcelle – tentative via Supabase (cache IDF) pour centroid + surface indicative éventuelle
     let parcelRow: any = null;
 
     try {
@@ -100,12 +92,12 @@ serve(async (req) => {
       );
 
       if (parcelleError) {
-        console.error("get_parcelle_by_id error:", parcelleError);
+        console.error("[plu-from-parcelle] parcel rpc error");
       } else if (parcelles && parcelles.length > 0) {
         parcelRow = Array.isArray(parcelles) ? parcelles[0] : parcelles;
       }
-    } catch (e) {
-      console.error("Unexpected error while calling get_parcelle_by_id:", e);
+    } catch (_e) {
+      console.error("[plu-from-parcelle] parcel rpc exception");
     }
 
     const parcel = {
@@ -117,7 +109,6 @@ serve(async (req) => {
       },
     };
 
-    // 3️⃣ PLU – robuste (comme avant)
     let pluFound = false;
     let zone: any = null;
     let ruleset: any = null;
@@ -134,8 +125,8 @@ serve(async (req) => {
       );
 
       if (pluError) {
-        console.error("plu_get_for_parcelle_any error:", pluError);
-        pluReason = "Error while fetching PLU rules";
+        console.error("[plu-from-parcelle] plu rpc error");
+        pluReason = "PLU_FETCH_ERROR";
       } else if (pluData) {
         let pluResult: any = null;
 
@@ -155,22 +146,19 @@ serve(async (req) => {
           ruleset = pluResult.rules ?? pluResult.ruleset ?? null;
           source = pluResult.source ?? null;
         } else {
-          pluReason = "PLU ruleset not found for this commune/zone";
+          pluReason = "PLU_NOT_FOUND";
         }
       } else {
-        pluReason = "PLU ruleset not found for this commune/zone";
+        pluReason = "PLU_NOT_FOUND";
       }
-    } catch (e) {
-      console.error(
-        "Unexpected error while calling plu_get_for_parcelle_any:",
-        e,
-      );
-      pluReason = "Error while fetching PLU rules";
+    } catch (_e) {
+      console.error("[plu-from-parcelle] plu rpc exception");
+      pluReason = "PLU_FETCH_ERROR";
     }
 
     const responseBody: any = {
       success: true,
-      version: "plu-from-parcelle-v1",
+      version: "plu-from-parcelle-v1.1",
       mode: "parcel",
       inputs: { commune_insee, commune_nom, parcel_id },
       parcel,
@@ -196,8 +184,7 @@ serve(async (req) => {
 
       responseBody.plu = {
         ...responseBody.plu,
-        reason:
-          pluReason ?? "PLU ruleset not found for this commune/zone",
+        reason: pluReason ?? "PLU_NOT_FOUND",
       };
 
       responseBody.plu_upload_hint = {
@@ -212,13 +199,13 @@ serve(async (req) => {
     }
 
     return jsonResponse(responseBody, 200);
-  } catch (err) {
-    console.error("Unexpected error in plu-from-parcelle:", err);
+  } catch (_e) {
+    console.error("[plu-from-parcelle] internal error");
+
     return jsonResponse(
       {
         success: false,
-        error: "Unexpected error",
-        details: err instanceof Error ? err.message : String(err),
+        error: "INTERNAL_ERROR",
       },
       500,
     );

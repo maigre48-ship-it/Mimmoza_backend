@@ -1,0 +1,274 @@
+﻿{
+    "project_type":  "EHPAD",
+    "config":  {
+                   "dvf_radius_km":  20,
+                   "dvf_horizon_months":  24,
+                   "bpe_radius_m":  3000,
+                   "essential_radius_m":  20000,
+                   "weights_used":  {
+                                        "dvf":  0.15,
+                                        "transport":  0,
+                                        "bpe":  0.25,
+                                        "ecoles":  0,
+                                        "sante":  0.3,
+                                        "insee":  0.3
+                                    },
+                   "transport_applicable":  false
+               },
+    "indices":  {
+                    "demand_index":  null,
+                    "supply_index":  100,
+                    "price_index":  50,
+                    "accessibility_index":  null,
+                    "risk_index":  0,
+                    "insee_index":  null,
+                    "ecoles_index":  null,
+                    "sante_index":  100,
+                    "global_score":  96,
+                    "weights_applied":  {
+                                            "dvf":  0.15,
+                                            "transport":  0,
+                                            "bpe":  0.25,
+                                            "ecoles":  0,
+                                            "sante":  0.3,
+                                            "insee":  0.3
+                                        }
+                },
+    "kpis":  [
+                 {
+                     "label":  "Transactions",
+                     "value":  108,
+                     "unit":  "ventes",
+                     "description":  "Nombre de transactions dans le perimetre"
+                 },
+                 {
+                     "label":  "Prix median",
+                     "value":  2500,
+                     "unit":  "EUR/m2",
+                     "description":  "Prix median au m2"
+                 },
+                 {
+                     "label":  "Prix moyen",
+                     "value":  5336,
+                     "unit":  "EUR/m2",
+                     "description":  "Prix moyen au m2"
+                 },
+                 {
+                     "label":  "Q1-Q3",
+                     "value":  "1478-4399",
+                     "unit":  "EUR/m2",
+                     "description":  "Fourchette interquartile"
+                 }
+             ],
+    "comps":  [
+                  {
+                      "id":  "2025-321340",
+                      "address":  "44 AV MARECHAL FOCH",
+                      "price_m2":  1281,
+                      "surface_m2":  367,
+                      "date":  "2025-06-27",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  739,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-321277",
+                      "address":  "5 AV MARECHAL FOCH",
+                      "price_m2":  3266,
+                      "surface_m2":  209,
+                      "date":  "2025-06-25",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  558,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-321228",
+                      "address":  "13 CHE DE LESTANQUET",
+                      "price_m2":  32,
+                      "surface_m2":  368,
+                      "date":  "2025-06-17",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  1648,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-321104",
+                      "address":  "3 PL DE LA REPUBLIQUE",
+                      "price_m2":  1167,
+                      "surface_m2":  30,
+                      "date":  "2025-06-12",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  434,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-321083",
+                      "address":  "18 AV MARECHAL FOCH",
+                      "price_m2":  5357,
+                      "surface_m2":  14,
+                      "date":  "2025-06-03",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  605,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320785",
+                      "address":  "20 AV MARECHAL FOCH",
+                      "price_m2":  3857,
+                      "surface_m2":  35,
+                      "date":  "2025-05-13",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  633,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320615",
+                      "address":  "22 AV BENJAMIN GOMEZ",
+                      "price_m2":  1678,
+                      "surface_m2":  143,
+                      "date":  "2025-05-12",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  1828,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320414",
+                      "address":  "48 AV DU 8 MAI 1945",
+                      "price_m2":  2990,
+                      "surface_m2":  50,
+                      "date":  "2025-04-30",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  2879,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320566",
+                      "address":  "12 B CHE DES BARTHES",
+                      "price_m2":  1478,
+                      "surface_m2":  450,
+                      "date":  "2025-04-30",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  1517,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320319",
+                      "address":  "30 RUE PORT-NEUF",
+                      "price_m2":  2363,
+                      "surface_m2":  91,
+                      "date":  "2025-04-25",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  124,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320409",
+                      "address":  "2 RUE DU 49EME RGT D INFANTERIE",
+                      "price_m2":  3649,
+                      "surface_m2":  120,
+                      "date":  "2025-04-25",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  212,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320507",
+                      "address":  "7 RUE LORMAND",
+                      "price_m2":  3281,
+                      "surface_m2":  64,
+                      "date":  "2025-04-18",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  107,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320487",
+                      "address":  "48 AV DU 8 MAI 1945",
+                      "price_m2":  2722,
+                      "surface_m2":  63,
+                      "date":  "2025-04-15",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  2879,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320172",
+                      "address":  "26 AV DE LA LEGION TCHEQUE",
+                      "price_m2":  33077,
+                      "surface_m2":  26,
+                      "date":  "2025-04-11",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  879,
+                      "commune":  "Bayonne"
+                  },
+                  {
+                      "id":  "2025-320185",
+                      "address":  "17 AV RAYMOND DE MARTRES",
+                      "price_m2":  10507,
+                      "surface_m2":  69,
+                      "date":  "2025-04-04",
+                      "type_local":  "Local industriel. commercial ou assimilÃ©",
+                      "distance_m":  1156,
+                      "commune":  "Bayonne"
+                  }
+              ],
+    "verdict":  "Marche tres favorable pour un projet de EHPAD (zone hors metropole, transport non evalue). Demande soutenue et bonne liquidite.",
+    "insights":  [
+                     {
+                         "type":  "positive",
+                         "title":  "108 transactions analysees",
+                         "description":  "Marche actif avec 108 ventes dans un rayon de 20 km.",
+                         "source":  "DVF"
+                     },
+                     {
+                         "type":  "neutral",
+                         "title":  "Prix median : 2â¯500 EUR/m2",
+                         "description":  "Intervalle (Q1-Q3) : 1â¯478 a 4â¯399 EUR/m2.",
+                         "source":  "DVF"
+                     },
+                     {
+                         "type":  "neutral",
+                         "title":  "Transports en commun",
+                         "description":  "Zone hors grande agglomeration - critere non evalue.",
+                         "source":  "Transport"
+                     },
+                     {
+                         "type":  "positive",
+                         "title":  "Pharmacie a 0.1 km",
+                         "description":  "Pharmacie Herboristerie Victor Hugo.",
+                         "source":  "Services ruraux"
+                     },
+                     {
+                         "type":  "warning",
+                         "title":  "Aucun commerce alimentaire trouve",
+                         "description":  "Pas de commerce alimentaire dans un rayon de 20 km.",
+                         "source":  "Services ruraux"
+                     },
+                     {
+                         "type":  "positive",
+                         "title":  "Medecin generaliste a 0 km",
+                         "description":  "PSYCHOLOGUE (Bayonne).",
+                         "source":  "Services ruraux"
+                     }
+                 ],
+    "modules":  {
+                    "senior":  {
+                                   "pct_plus_65":  null,
+                                   "pension_retraite_moyenne":  null,
+                                   "professionnels_sante":  {
+                                                                "medecins_generalistes":  43,
+                                                                "medecins_specialistes":  35,
+                                                                "dentistes":  32,
+                                                                "infirmiers":  53,
+                                                                "kinesitherapeutes":  105,
+                                                                "pharmacies":  0,
+                                                                "autres":  154
+                                                            },
+                                   "ehpad_count":  0,
+                                   "residences_seniors_count":  0,
+                                   "hopital_distance_km":  null,
+                                   "senior_demand_score":  null,
+                                   "competition_score":  100
+                               }
+                }
+}

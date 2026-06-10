@@ -19,81 +19,105 @@ type Body = {
   commune_insee?: string;
 };
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
+}
+
 serve(async (req: Request): Promise<Response> => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
-  // Method
   if (req.method !== "POST") {
-    return new Response(JSON.stringify({ success: false, error: "METHOD_NOT_ALLOWED" }), {
-      status: 405,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ success: false, error: "METHOD_NOT_ALLOWED" }, 405);
   }
 
-  // Guard env
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    return new Response(
-      JSON.stringify({
+    console.error("[plu-faisabilite-summary-v1] Missing environment configuration");
+
+    return jsonResponse(
+      {
         success: false,
         error: "MISSING_ENV",
-        message: "SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY non configuré",
-      }),
-      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      },
+      500,
     );
   }
 
   try {
     const body = (await req.json().catch(() => ({}))) as Body;
 
-    const storage_path = typeof body.storage_path === "string" ? body.storage_path.trim() : null;
-    const document_id = typeof body.document_id === "string" ? body.document_id.trim() : null;
-    const commune_insee = typeof body.commune_insee === "string" ? body.commune_insee.trim() : null;
+    const storage_path = typeof body.storage_path === "string"
+      ? body.storage_path.trim() || null
+      : null;
+
+    const document_id = typeof body.document_id === "string"
+      ? body.document_id.trim() || null
+      : null;
+
+    const commune_insee = typeof body.commune_insee === "string"
+      ? body.commune_insee.trim() || null
+      : null;
 
     if (!storage_path && !document_id && !commune_insee) {
-      return new Response(
-        JSON.stringify({
+      return jsonResponse(
+        {
           success: false,
           error: "MISSING_INPUT",
-          message: "Fournir storage_path ou document_id ou commune_insee",
-        }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+        },
+        400,
       );
     }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        persistSession: false,
+      },
+    });
 
-    // 1) Charger le document PLU (sans colonnes optionnelles non garanties)
     let docQuery = supabase
       .from("plu_documents")
       .select("id, commune_insee, commune_nom, storage_path, created_at")
       .order("created_at", { ascending: false })
       .limit(1);
 
-    if (document_id) docQuery = docQuery.eq("id", document_id);
-    else if (storage_path) docQuery = docQuery.eq("storage_path", storage_path);
-    else if (commune_insee) docQuery = docQuery.eq("commune_insee", commune_insee);
+    if (document_id) {
+      docQuery = docQuery.eq("id", document_id);
+    } else if (storage_path) {
+      docQuery = docQuery.eq("storage_path", storage_path);
+    } else if (commune_insee) {
+      docQuery = docQuery.eq("commune_insee", commune_insee);
+    }
 
     const { data: docs, error: docErr } = await docQuery;
 
     if (docErr) {
-      return new Response(JSON.stringify({ success: false, error: "DB_ERROR", details: docErr.message }), {
-        status: 500,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+      console.error("[plu-faisabilite-summary-v1] Document query error");
+
+      return jsonResponse(
+        {
+          success: false,
+          error: "DB_ERROR",
+        },
+        500,
+      );
     }
 
     const doc = docs?.[0] ?? null;
+
     if (!doc) {
-      return new Response(JSON.stringify({ success: false, error: "DOCUMENT_NOT_FOUND" }), {
-        status: 404,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+      return jsonResponse(
+        {
+          success: false,
+          error: "DOCUMENT_NOT_FOUND",
+        },
+        404,
+      );
     }
 
-    // 2) Charger les zones normalisées pour ce document
     const { data: zones, error: zonesErr } = await supabase
       .from("plu_zone_rules_normalized")
       .select("document_id, commune_insee, zone_code, zone_libelle, confidence_score, source, rules, created_at")
@@ -101,25 +125,34 @@ serve(async (req: Request): Promise<Response> => {
       .order("zone_code", { ascending: true });
 
     if (zonesErr) {
-      return new Response(JSON.stringify({ success: false, error: "DB_ERROR", details: zonesErr.message }), {
-        status: 500,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+      console.error("[plu-faisabilite-summary-v1] Zones query error");
+
+      return jsonResponse(
+        {
+          success: false,
+          error: "DB_ERROR",
+        },
+        500,
+      );
     }
 
-    return new Response(
-      JSON.stringify({
+    return jsonResponse(
+      {
         success: true,
         document: doc,
         zones: zones ?? [],
-      }),
-      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      },
+      200,
     );
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Unknown error";
-    return new Response(JSON.stringify({ success: false, error: "INTERNAL_ERROR", message }), {
-      status: 500,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-    });
+  } catch {
+    console.error("[plu-faisabilite-summary-v1] Internal error");
+
+    return jsonResponse(
+      {
+        success: false,
+        error: "INTERNAL_ERROR",
+      },
+      500,
+    );
   }
 });

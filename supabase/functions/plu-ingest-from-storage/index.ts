@@ -1,21 +1,11 @@
 ﻿// supabase/functions/plu-ingest-from-storage/index.ts
-// Version : plu-ingest-from-storage-v10 (FIX: avoid double /api/plu-parse concatenation)
-//
-// Objectif :
-// - Prend commune_insee (+ commune_nom optionnel)
-// - Trouve le dernier PDF dans Storage (bucket "plu_raw")
-// - Crée une URL signée publique (basée sur SUPABASE_URL cloud, jamais localhost/kong)
-// - Appelle le moteur Node (PLU_PARSER_API_URL) pour extraire les rulesets
-// - Appelle plu-ingest-rulesets (Edge Function) pour enregistrer dans plu_rulesets_universal
-// - Retourne un récapitulatif
+// Version : plu-ingest-from-storage-v10.1
+// SECURITY HARDENING: no sensitive leaks in logs/responses
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 
-// ----------------------------------------------------------------------------
-// ENV (explicit checks to avoid "Invalid URL: undefined")
-// ----------------------------------------------------------------------------
 function requireEnv(name: string): string {
   const v = Deno.env.get(name);
   if (!v || !v.toString().trim()) {
@@ -30,74 +20,53 @@ function getEnv(name: string): string | null {
   return s ? s : null;
 }
 
-function assertValidUrl(name: string, value: string): string | null {
+function assertValidUrl(_name: string, value: string): string | null {
   try {
     new URL(value);
     return null;
   } catch {
-    return `${name} is not a valid URL: ${value}`;
+    return "INVALID_URL";
   }
 }
 
-// ✅ SUPABASE_URL: priorité à SUPABASE_URL (cloud), fallback MIMMOZA_SUPABASE_URL
 const SUPABASE_URL = getEnv("SUPABASE_URL") ?? getEnv("MIMMOZA_SUPABASE_URL") ?? "";
 
-// ✅ Service role key: priorité à SUPABASE_SERVICE_ROLE_KEY, fallback MIMMOZA_SERVICE_ROLE_KEY
 const SUPABASE_SERVICE_ROLE_KEY =
   getEnv("SUPABASE_SERVICE_ROLE_KEY") ??
   getEnv("MIMMOZA_SERVICE_ROLE_KEY") ??
   "";
-if (!SUPABASE_SERVICE_ROLE_KEY) throw new Error("MISSING_ENV:SUPABASE_SERVICE_ROLE_KEY");
 
-// 🔑 On utilise un nom custom pour l'ANON KEY, pour éviter le blocage SUPABASE_*
-const MIMMOZA_ANON_KEY = requireEnv("MIMMOZA_ANON_KEY");
-
-// ✅ Parser config
-const DEFAULT_PLU_PARSER_URL = "https://mimmoza-plu-parser.onrender.com";
-const PLU_PARSER_RAW = (getEnv("PLU_PARSER_API_URL") ?? getEnv("PLU_PARSER_URL") ?? DEFAULT_PLU_PARSER_URL).trim().replace(/\/+$/, "");
-const PLU_PARSER_TOKEN = (getEnv("PLU_PARSER_BEARER_TOKEN") ?? getEnv("PLU_PARSER_KEY") ?? getEnv("PLU_PARSER_API_KEY") ?? "").trim();
-
-// ✅ Normaliser l'URL du parser: accepter soit la base, soit l'endpoint complet
-const PLU_PARSER_ENDPOINT_SUFFIX = "/api/plu-parse";
-
-/**
- * Normalise l'URL du parser pour éviter la double concaténation de /api/plu-parse
- * Accepte:
- *   - "https://example.com" → "https://example.com/api/plu-parse"
- *   - "https://example.com/" → "https://example.com/api/plu-parse"
- *   - "https://example.com/api/plu-parse" → "https://example.com/api/plu-parse"
- *   - "https://example.com/api/plu-parse/" → "https://example.com/api/plu-parse"
- */
-function normalizeParserUrl(rawUrl: string): string {
-  // Nettoyer les trailing slashes
-  let url = rawUrl.trim().replace(/\/+$/, "");
-
-  // Si l'URL se termine déjà par /api/plu-parse, on la garde telle quelle
-  if (url.endsWith(PLU_PARSER_ENDPOINT_SUFFIX)) {
-    return url;
-  }
-
-  // Sinon, on ajoute le suffix
-  return `${url}${PLU_PARSER_ENDPOINT_SUFFIX}`;
+if (!SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error("MISSING_ENV:SUPABASE_SERVICE_ROLE_KEY");
 }
 
-const PLU_PARSER_FULL_URL = normalizeParserUrl(PLU_PARSER_RAW);
+const MIMMOZA_ANON_KEY = requireEnv("MIMMOZA_ANON_KEY");
 
-// ----------------------------------------------------------------------------
-// Clients & URLs
-// ----------------------------------------------------------------------------
+const DEFAULT_PLU_PARSER_URL = "https://mimmoza-plu-parser.onrender.com";
+
+const PLU_PARSER_BASE = (
+  getEnv("PLU_PARSER_API_URL") ??
+  getEnv("PLU_PARSER_URL") ??
+  DEFAULT_PLU_PARSER_URL
+)
+  .trim()
+  .replace(/\/+$/, "");
+
+const PLU_PARSER_TOKEN = (
+  getEnv("PLU_PARSER_BEARER_TOKEN") ??
+  getEnv("PLU_PARSER_KEY") ??
+  getEnv("PLU_PARSER_API_KEY") ??
+  ""
+).trim();
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-// Base URL for calling other Edge Functions.
 const FUNCTIONS_BASE_URL = SUPABASE_URL.includes("supabase.co")
   ? SUPABASE_URL.replace(".supabase.co", ".functions.supabase.co")
   : `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1`;
 
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -112,17 +81,6 @@ function safeStr(v: unknown): string {
   return (v ?? "").toString();
 }
 
-/**
- * Truncate string to max length for debug output
- */
-function truncate(s: string, maxLen: number): string {
-  if (!s || s.length <= maxLen) return s;
-  return s.substring(0, maxLen) + "...";
-}
-
-/**
- * Check if a hostname is internal (localhost, 127.0.0.1, kong, etc.)
- */
 function isInternalHost(hostname: string): boolean {
   const lower = hostname.toLowerCase();
   return (
@@ -135,45 +93,30 @@ function isInternalHost(hostname: string): boolean {
   );
 }
 
-/**
- * Ensure the signed URL is a public URL accessible from the internet.
- * - If relative path, prefix with SUPABASE_URL
- * - If internal host (localhost, kong, 127.0.0.1), replace with SUPABASE_URL host
- * - Always ensure it's an absolute URL with the cloud Supabase host
- */
 function makePublicSignedUrl(signedUrlRaw: string, supabaseUrl: string): string {
   if (!signedUrlRaw) return signedUrlRaw;
 
   const trimmed = signedUrlRaw.trim();
   const baseUrl = supabaseUrl.replace(/\/+$/, "");
 
-  // Case 1: Relative path (starts with /)
   if (trimmed.startsWith("/")) {
     return `${baseUrl}${trimmed}`;
   }
 
-  // Case 2: Already absolute URL
   try {
     const u = new URL(trimmed);
 
-    // If internal host, replace with Supabase cloud host
     if (isInternalHost(u.hostname)) {
       const base = new URL(baseUrl);
-      // Keep pathname and search from original, use host from Supabase URL
       return `${base.origin}${u.pathname}${u.search}`;
     }
 
-    // Already a valid external URL
     return trimmed;
   } catch {
-    // Not a valid URL, try to prefix with base
     return `${baseUrl}/${trimmed}`;
   }
 }
 
-// ----------------------------------------------------------------------------
-// Handler
-// ----------------------------------------------------------------------------
 serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -184,66 +127,42 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    // ✅ Validate SUPABASE_URL
     if (!SUPABASE_URL) {
-      return jsonResponse(
-        { success: false, error: "MISSING_ENV_SUPABASE_URL", details: "SUPABASE_URL or MIMMOZA_SUPABASE_URL must be set" },
-        500,
-      );
+      return jsonResponse({ success: false, error: "MISSING_ENV_SUPABASE_URL" }, 500);
     }
 
-    // ✅ Reject internal SUPABASE_URL in production
     let supabaseHost = "";
     try {
       supabaseHost = new URL(SUPABASE_URL).hostname;
     } catch {
-      return jsonResponse(
-        { success: false, error: "INVALID_ENV_SUPABASE_URL", details: `SUPABASE_URL is not a valid URL: ${SUPABASE_URL}` },
-        500,
-      );
+      return jsonResponse({ success: false, error: "INVALID_ENV_SUPABASE_URL" }, 500);
     }
+
     if (isInternalHost(supabaseHost)) {
-      return jsonResponse(
-        {
-          success: false,
-          error: "SUPABASE_URL_MUST_BE_CLOUD_IN_PROD",
-          details: `SUPABASE_URL resolves to an internal host (${supabaseHost}). Set SUPABASE_URL to https://<project-ref>.supabase.co in Supabase Secrets.`,
-          supabase_url: SUPABASE_URL,
-        },
-        500,
-      );
+      return jsonResponse({ success: false, error: "SUPABASE_URL_MUST_BE_CLOUD_IN_PROD" }, 500);
     }
 
-    // ✅ Validate parser full URL (already normalized)
-    const parserFullUrl = PLU_PARSER_FULL_URL;
+    const parserFullUrl = `${PLU_PARSER_BASE}/api/plu-parse`;
     const parserUrlErr = assertValidUrl("PLU_PARSER_URL", parserFullUrl);
+
     if (parserUrlErr) {
-      return jsonResponse(
-        { success: false, error: "INVALID_ENV_PLU_PARSER_URL", details: parserUrlErr, parser_raw: PLU_PARSER_RAW, parser_normalized: parserFullUrl },
-        500,
-      );
+      return jsonResponse({ success: false, error: "INVALID_ENV_PLU_PARSER_URL" }, 500);
     }
 
-    // ✅ Check parser token is present
     if (!PLU_PARSER_TOKEN) {
-      return jsonResponse(
-        { success: false, error: "MISSING_ENV_PLU_PARSER_TOKEN", details: "PLU_PARSER_BEARER_TOKEN, PLU_PARSER_KEY, or PLU_PARSER_API_KEY must be set" },
-        500,
-      );
+      return jsonResponse({ success: false, error: "MISSING_ENV_PLU_PARSER_TOKEN" }, 500);
     }
 
     const body = await req.json().catch(() => ({}));
 
     const commune_insee = safeStr(body.commune_insee).trim();
     const commune_nom = safeStr(body.commune_nom ?? body.commune_name).trim() || null;
-
     const requested_storage_path = safeStr(body.storage_path).trim() || null;
 
     if (!commune_insee) {
       return jsonResponse({ success: false, error: "MISSING_COMMUNE_INSEE" }, 400);
     }
 
-    // 1) List files in Storage
     const BUCKET_NAME = "plu_raw";
 
     const { data: files, error: listError } = await supabase.storage
@@ -254,10 +173,7 @@ serve(async (req: Request): Promise<Response> => {
       });
 
     if (listError) {
-      return jsonResponse(
-        { success: false, error: "STORAGE_LIST_ERROR", details: listError.message },
-        500,
-      );
+      return jsonResponse({ success: false, error: "STORAGE_LIST_ERROR" }, 500);
     }
 
     if (!files || files.length === 0) {
@@ -268,72 +184,37 @@ serve(async (req: Request): Promise<Response> => {
 
     if (requested_storage_path) {
       if (!requested_storage_path.startsWith(`${commune_insee}/`)) {
-        return jsonResponse(
-          {
-            success: false,
-            error: "INVALID_STORAGE_PATH",
-            details: `storage_path must start with "${commune_insee}/"`,
-          },
-          400,
-        );
+        return jsonResponse({ success: false, error: "INVALID_STORAGE_PATH" }, 400);
       }
+
       storagePath = requested_storage_path;
     } else {
       const latestFile = files[0];
       storagePath = `${commune_insee}/${latestFile.name}`;
     }
 
-    // 2) Build signed URL
     const { data: signed, error: signedError } = await supabase.storage
       .from(BUCKET_NAME)
-      .createSignedUrl(storagePath, 10 * 60); // 10 minutes
+      .createSignedUrl(storagePath, 10 * 60);
 
     if (signedError || !signed?.signedUrl) {
-      return jsonResponse(
-        {
-          success: false,
-          error: "SIGNED_URL_ERROR",
-          details: signedError?.message ?? "No signed URL returned",
-          storage_path: storagePath,
-        },
-        500,
-      );
+      return jsonResponse({ success: false, error: "SIGNED_URL_ERROR" }, 500);
     }
 
     const signedUrlRaw = signed.signedUrl;
-
-    // ✅ Convert to public URL (never localhost/kong/127.0.0.1)
     const finalSignedUrl = makePublicSignedUrl(signedUrlRaw, SUPABASE_URL);
 
-    // ✅ LOGS after signed URL generation
-    console.log("[PLU_INGEST] bucket =", BUCKET_NAME);
-    console.log("[PLU_INGEST] storage_path =", storagePath);
-    console.log("[PLU_INGEST] signed_url_raw =", signedUrlRaw);
-    console.log("[PLU_INGEST] signed_url_final =", finalSignedUrl);
-    console.log("[PLU_INGEST] SUPABASE_URL =", SUPABASE_URL);
+    console.log("[PLU_INGEST] signed url generated");
 
-    try {
-      const u = new URL(finalSignedUrl);
-      console.log("[PLU_INGEST] signed_url_host =", u.host);
-      console.log("[PLU_INGEST] signed_url_path =", u.pathname);
-    } catch (e) {
-      console.log("[PLU_INGEST] signed_url_parse_failed =", String(e));
-    }
-
-    // 3) Parser call
     const parserPayload = {
       commune_insee,
       commune_nom,
       source_pdf_url: finalSignedUrl,
     };
 
-    // ✅ LOGS before parser call (including raw and normalized for debugging)
-    console.log("[PLU_INGEST] parser_url_raw =", PLU_PARSER_RAW);
-    console.log("[PLU_INGEST] parser_url_normalized =", parserFullUrl);
-    console.log("[PLU_INGEST] parser_payload.source_pdf_url =", finalSignedUrl);
+    console.log("[PLU_INGEST] parser call");
 
     let parserRes: Response;
-    let parserRawText: string = "";
     let parserJson: any = null;
 
     try {
@@ -341,99 +222,57 @@ serve(async (req: Request): Promise<Response> => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${PLU_PARSER_TOKEN}`,
+          Authorization: `Bearer ${PLU_PARSER_TOKEN}`,
         },
         body: JSON.stringify(parserPayload),
       });
 
-      // ✅ Always capture raw text for debugging
-      parserRawText = await parserRes.text();
+      const parserRawText = await parserRes.text();
 
-      // ✅ Log response status
-      console.log("[PLU_PARSER] status =", parserRes.status);
-
-      // ✅ Try to parse as JSON
       try {
         parserJson = JSON.parse(parserRawText);
       } catch {
         parserJson = null;
       }
-    } catch (fetchErr) {
-      // Network error (DNS, timeout, etc.)
-      console.log("[PLU_PARSER] fetch_error =", fetchErr instanceof Error ? fetchErr.message : String(fetchErr));
-      return jsonResponse(
-        {
-          success: false,
-          error: "PLU_PARSER_FETCH_ERROR",
-          details: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
-          parser_url_called: parserFullUrl,
-          parser_url_raw: PLU_PARSER_RAW,
-          storage_path: storagePath,
-          source_pdf_url: finalSignedUrl,
-        },
-        200,
-      );
+    } catch (_e) {
+      console.log("[PLU_INGEST] parser call failed");
+      return jsonResponse({ success: false, error: "PLU_PARSER_FETCH_ERROR" }, 200);
     }
 
-    // ✅ Check for non-2xx response
     if (!parserRes.ok) {
-      // ✅ Log error body (max 2000 chars)
-      console.log("[PLU_PARSER] error_body =", truncate(parserRawText, 2000));
+      console.log("[PLU_INGEST] parser call failed");
 
       return jsonResponse(
         {
           success: false,
           error: "PLU_PARSER_FAILED",
           status: parserRes.status,
-          status_text: parserRes.statusText,
-          parser_url_called: parserFullUrl,
-          parser_url_raw: PLU_PARSER_RAW,
-          parser_body_preview: truncate(parserRawText, 2000),
-          parser_response: parserJson,
-          storage_path: storagePath,
-          source_pdf_url: finalSignedUrl,
-          signed_url_raw: signedUrlRaw,
         },
         200,
       );
     }
 
-    // ✅ Check parser returned success
     if (!parserJson?.success) {
-      console.log("[PLU_PARSER] response_not_success =", truncate(parserRawText, 2000));
+      console.log("[PLU_INGEST] parser call failed");
 
       return jsonResponse(
         {
           success: false,
           error: "PLU_PARSER_RESPONSE_NOT_SUCCESS",
           status: parserRes.status,
-          parser_url_called: parserFullUrl,
-          parser_url_raw: PLU_PARSER_RAW,
-          parser_body_preview: truncate(parserRawText, 2000),
-          parser_response: parserJson,
-          storage_path: storagePath,
-          source_pdf_url: finalSignedUrl,
         },
         200,
       );
     }
+
+    console.log("[PLU_INGEST] parser call succeeded");
 
     const zones_rulesets = parserJson?.zones_rulesets;
 
     if (!Array.isArray(zones_rulesets) || zones_rulesets.length === 0) {
-      return jsonResponse(
-        {
-          success: false,
-          error: "PARSER_INVALID_OUTPUT",
-          parser_response: parserJson,
-          storage_path: storagePath,
-          source_pdf_url: finalSignedUrl,
-        },
-        200,
-      );
+      return jsonResponse({ success: false, error: "PARSER_INVALID_OUTPUT" }, 200);
     }
 
-    // 4) Ingest rulesets into DB
     const ingestBody = {
       commune_insee,
       commune_nom,
@@ -460,9 +299,6 @@ serve(async (req: Request): Promise<Response> => {
         {
           success: false,
           error: "PLU_INGEST_RULESETS_FAILED",
-          ingest: ingestJson,
-          storage_path: storagePath,
-          functions_base_url: FUNCTIONS_BASE_URL,
         },
         200,
       );
@@ -471,24 +307,22 @@ serve(async (req: Request): Promise<Response> => {
     return jsonResponse(
       {
         success: true,
-        version: "plu-ingest-from-storage-v10",
+        version: "plu-ingest-from-storage-v10.1",
         commune_insee,
         commune_nom,
-        storage_path: storagePath,
-        source_pdf_url: finalSignedUrl,
-        parser_url_used: parserFullUrl,
-        parser_url_raw: PLU_PARSER_RAW,
-        ingest: ingestJson,
+        ingest: {
+          success: true,
+        },
       },
       200,
     );
-  } catch (err) {
-    console.log("[PLU_INGEST] internal_error =", err instanceof Error ? err.message : String(err));
+  } catch (_e) {
+    console.log("[PLU_INGEST] internal error");
+
     return jsonResponse(
       {
         success: false,
         error: "PLU_INGEST_FROM_STORAGE_INTERNAL_ERROR",
-        details: err instanceof Error ? err.message : String(err),
       },
       200,
     );

@@ -1,6 +1,6 @@
 -- supabase/migrations/20251228_create_promoteur_terrain3d_runs.sql
 -- V1: table de persistance des runs terrain 3D (optionnelle)
--- Tu peux la garder en attente tant que le back n'est pas branchÃ©.
+-- Tu peux la garder en attente tant que le back n'est pas branchÃƒÂ©.
 
 create table if not exists public.promoteur_terrain3d_runs (
   id uuid primary key default gen_random_uuid(),

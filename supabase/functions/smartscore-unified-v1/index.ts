@@ -238,7 +238,7 @@ serve(async (req: Request): Promise<Response> => {
 
   if (!OPENAI_API_KEY) {
     return errorResponse(
-      "OPENAI_API_KEY is not set in Supabase environment variables",
+      "INTERNAL_CONFIGURATION_ERROR",
       500,
     );
   }
@@ -283,10 +283,10 @@ ${JSON.stringify(inputJson)}
     );
 
     if (!completion.ok) {
-      const errText = await completion.text();
-      console.error("OpenAI error:", errText);
+      await completion.text();
+      console.error("[smartscore-unified-v1] OpenAI error");
       return errorResponse(
-        "Error calling OpenAI API",
+        "AI_PROVIDER_ERROR",
         500,
       );
     }
@@ -295,17 +295,17 @@ ${JSON.stringify(inputJson)}
 
     const content = data?.choices?.[0]?.message?.content;
     if (!content || typeof content !== "string") {
-      console.error("Invalid OpenAI response:", data);
-      return errorResponse("Invalid response from OpenAI", 500);
+      console.error("[smartscore-unified-v1] Invalid OpenAI response");
+      return errorResponse("AI_INVALID_RESPONSE", 500);
     }
 
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (_e) {
-      console.error("Failed to parse JSON from OpenAI:", content);
+      console.error("[smartscore-unified-v1] Failed to parse JSON from OpenAI");
       return errorResponse(
-        "OpenAI did not return valid JSON (parse error)",
+        "AI_PARSE_ERROR",
         500,
       );
     }
@@ -318,8 +318,8 @@ ${JSON.stringify(inputJson)}
         ...corsHeaders,
       },
     });
-  } catch (e) {
-    console.error("Unexpected error:", e);
-    return errorResponse("Unexpected server error", 500);
+  } catch (_e) {
+    console.error("[smartscore-unified-v1] Unexpected error");
+    return errorResponse("INTERNAL_ERROR", 500);
   }
 });

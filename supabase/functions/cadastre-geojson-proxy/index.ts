@@ -140,7 +140,7 @@ serve(async (req) => {
 
     return jsonResponse(geojson, 200);
   } catch (err: any) {
-    console.error("cadastre-geojson-proxy error", err);
+    console.error("[cadastre-geojson-proxy] internal error");
 
     return jsonResponse(
       {

@@ -4,7 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 /**
  * risks-refresh-v1 — Option 1 (audit strict)
  * - Persiste lat/lng + risks_data (jsonb)
- * - Utilise les endpoints GeoRisques qui existent (comme banque-risques-v1):
+ * - Utilise les endpoints GeoRisques qui existent (comme risques-v1):
  *   - https://georisques.gouv.fr/api/v1/gaspar/catnat?latlon=lon,lat&rayon=m
  *   - https://georisques.gouv.fr/api/v1/gaspar/risques?latlon=lon,lat&rayon=m
  *   - https://georisques.gouv.fr/api/v1/ppr?latlon=lon,lat&rayon=m (+ code_insee)
@@ -19,7 +19,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-// ✅ IMPORTANT: pas de "www." (c’est ce qui marchait dans banque-risques-v1)
+// ✅ IMPORTANT: pas de "www." (c’est ce qui marchait dans risques-v1)
 const GEORISQUES_BASE = "https://georisques.gouv.fr/api/v1";
 const BAN_BASE = "https://api-adresse.data.gouv.fr";
 

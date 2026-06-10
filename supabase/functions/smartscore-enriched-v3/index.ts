@@ -382,7 +382,7 @@ async function getFromCache(cacheKey: string): Promise<any | null> {
   try {
     const { data, error } = await supabase.from("api_cache").select("data").eq("cache_key", cacheKey).gt("expires_at", new Date().toISOString()).single();
     if (!error && data?.data) { supabase.from("api_cache").update({ hit_count: (data as any).hit_count ? (data as any).hit_count + 1 : 1 }).eq("cache_key", cacheKey).then(() => {}); return data.data; }
-  } catch (e) { console.warn("Cache read error:", e); }
+  } catch (e) { console.warn("Cache read error:"); }
   return null;
 }
 async function saveToCache(cacheKey: string, provider: string, data: any, ttlSeconds: number): Promise<void> {
@@ -390,7 +390,7 @@ async function saveToCache(cacheKey: string, provider: string, data: any, ttlSec
   try {
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
     await supabase.from("api_cache").upsert({ cache_key: cacheKey, provider, data, expires_at: expiresAt, hit_count: 0 }, { onConflict: "cache_key" });
-  } catch (e) { console.warn("Cache write error:", e); }
+  } catch (e) { console.warn("Cache write error:"); }
 }
 
 // ----------------------------------------------------
@@ -437,12 +437,10 @@ async function fetchParcelFromApiCarto(idu: string, communeInseeHint?: string | 
   const section = parsed.section; const numero = parsed.numero; const com_abs = parsed.com_abs ?? "000";
   if (!code_insee || !section || !numero) { dbg.error = "Missing code_insee/section/numero"; return { point: null, dbg }; }
   const url = "https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=" + encodeURIComponent(code_insee) + "&section=" + encodeURIComponent(section) + "&numero=" + encodeURIComponent(numero) + "&com_abs=" + encodeURIComponent(com_abs) + "&_limit=1";
-  dbg.url = url;
   try {
     const resp = await fetch(url, { method: "GET", headers: { accept: "application/json" } });
-    dbg.status = resp.status; dbg.ok = resp.ok;
     const json = await resp.json().catch(() => null);
-    if (!json || !resp.ok) { dbg.error = "api-carto error status=" + String(resp.status); return { point: null, dbg }; }
+    if (!json || !resp.ok) { dbg.error = "API_CARTO_ERROR"; return { point: null, dbg }; }
     dbg.numberReturned = numOrNull((json as any).numberReturned) ?? null;
     const feature = Array.isArray((json as any).features) && (json as any).features.length > 0 ? (json as any).features[0] : null;
     if (!feature?.geometry) { dbg.error = "no feature.geometry"; return { point: null, dbg }; }
@@ -453,7 +451,7 @@ async function fetchParcelFromApiCarto(idu: string, communeInseeHint?: string | 
     let surface_m2: number | null = null;
     try { surface_m2 = turf.area(feature); } catch { surface_m2 = null; }
     return { point: { lat, lon, source: "parcel", parcel_id: idu, commune_insee: code_insee, surface_m2: surface_m2 ?? undefined }, dbg };
-  } catch (e) { dbg.error = "fetch exception: " + String(e); return { point: null, dbg }; }
+  } catch (e) { dbg.error = "FETCH_EXCEPTION"; return { point: null, dbg }; }
 }
 
 async function resolvePointFromParcelId(parcelId: string, communeInsee?: string | number | null, debug = false): Promise<{ point: ResolvedPoint | null; cadastreDebug?: CadastreFetchDebug; rpcDebug?: any }> {
@@ -467,10 +465,10 @@ async function resolvePointFromParcelId(parcelId: string, communeInsee?: string 
   const tryRpc = async (comm: string | null) => await supabase.rpc("get_parcelle_centroid", { p_parcel_id: parcelId, p_commune_insee: comm });
   let { data, error } = await tryRpc(communeInsee?.toString() ?? null);
   if (!error && (!Array.isArray(data) || data.length === 0)) ({ data, error } = await tryRpc(null));
-  if (error) { console.error("RPC get_parcelle_centroid error"); return { point: null, rpcDebug: { error } }; }
+  if (error) { console.error("RPC get_parcelle_centroid error"); return { point: null, rpcDebug: { error: "RPC_ERROR" } }; }
   if (Array.isArray(data) && data.length > 0) {
     const row: any = data[0]; const rLat = numOrNull(row.lat); const rLon = numOrNull(row.lon);
-    if (rLat != null && rLon != null) return { point: { lat: rLat, lon: rLon, source: "parcel", parcel_id: parcelId, commune_insee: safeToString(row.commune_insee) ?? communeInsee?.toString() ?? undefined, surface_m2: numOrNull(row.surface_m2) ?? undefined }, rpcDebug: { row } };
+    if (rLat != null && rLon != null) return { point: { lat: rLat, lon: rLon, source: "parcel", parcel_id: parcelId, commune_insee: safeToString(row.commune_insee) ?? communeInsee?.toString() ?? undefined, surface_m2: numOrNull(row.surface_m2) ?? undefined }, rpcDebug: { found: true } };
   }
   return { point: null, rpcDebug: { data_len: Array.isArray(data) ? data.length : null } };
 }
@@ -497,7 +495,7 @@ async function resolveAnalysisPoint(payload: MarketStudyPayload): Promise<{ poin
           if (Number.isFinite(lat) && Number.isFinite(lon)) return { point: { lat, lon, source: "commune", commune_insee: inseeCode, parcel_id: parcel_id ?? undefined }, error: null };
         }
       }
-    } catch (e) { console.warn("[resolveAnalysisPoint] geo.api fallback error:", e); }
+    } catch (e) { console.warn("[resolveAnalysisPoint] geo.api fallback error:"); }
   }
   return { point: null, error: "Impossible de géolocaliser. Fournir: address, commune_insee, parcel_id, ou lat/lon." };
 }
@@ -560,12 +558,12 @@ async function resolveArrondissementCode(communeCode: string, lat: number | null
           for (const cpVal of (c.codesPostaux || [])) { const mapped = CP_TO_ARRONDISSEMENT[cpVal]; if (mapped) return { dvfCode: mapped, arrondissement: mapped, source: "geoapi_cp" }; }
         }
       }
-    } catch (e) { if (debug) console.warn("[DVF Arrondissement] geoapi error:", e); }
+    } catch (e) { if (debug) console.warn("[DVF Arrondissement] geoapi error:"); }
     if (communeCode === "75056") {
       try {
         const revResp = await fetch("https://api-adresse.data.gouv.fr/reverse/?lat=" + String(lat) + "&lon=" + String(lon) + "&limit=1", { signal: AbortSignal.timeout(5000) });
         if (revResp.ok) { const revData = await revResp.json(); const postcode = revData?.features?.[0]?.properties?.postcode; if (postcode) { const mapped = CP_TO_ARRONDISSEMENT[postcode]; if (mapped) return { dvfCode: mapped, arrondissement: mapped, source: "ban_reverse" }; } }
-      } catch (e) { if (debug) console.warn("[DVF Arrondissement] BAN reverse error:", e); }
+      } catch (e) { if (debug) console.warn("[DVF Arrondissement] BAN reverse error:"); }
     }
   }
   return { dvfCode: communeCode, arrondissement: null, source: "fallback" };
@@ -588,7 +586,7 @@ async function dvfMarketKpis(params: { lat: number; lon: number; radius_m?: numb
   if (cached) { if (debug) console.log("DVF from cache"); return { ...cached, source: "cache" }; }
   let codeCommune = commune_insee; let nomCommune: string | null = null;
   if (!codeCommune) {
-    try { const geoResp = await fetch(GEO_API_BASE + "/communes?lat=" + String(lat) + "&lon=" + String(lon) + "&fields=code,nom&limit=1"); if (geoResp.ok) { const communes = await geoResp.json(); if (communes.length > 0) { codeCommune = communes[0].code; nomCommune = communes[0].nom; } } } catch (e) { if (debug) console.warn("DVF: erreur detection commune:", e); }
+    try { const geoResp = await fetch(GEO_API_BASE + "/communes?lat=" + String(lat) + "&lon=" + String(lon) + "&fields=code,nom&limit=1"); if (geoResp.ok) { const communes = await geoResp.json(); if (communes.length > 0) { codeCommune = communes[0].code; nomCommune = communes[0].nom; } } } catch (e) { if (debug) console.warn("DVF: erreur detection commune:"); }
   } else {
     try { const geoResp = await fetch(GEO_API_BASE + "/communes/" + codeCommune + "?fields=nom"); if (geoResp.ok) { nomCommune = (await geoResp.json()).nom; } } catch { /* Ignorer */ }
   }
@@ -607,7 +605,7 @@ async function dvfMarketKpis(params: { lat: number; lon: number; radius_m?: numb
     try {
       const resp = await fetch(csvUrl, { signal: AbortSignal.timeout(10000) });
       if (resp.ok) { const rows = parseCSV(await resp.text()); allRows = allRows.concat(rows); csvSources.push(String(year)); if (debug) console.log("DVF " + String(year) + ": " + String(rows.length) + " lignes"); }
-    } catch (e) { if (debug) console.warn("DVF " + String(year) + " error:", e); }
+    } catch (e) { if (debug) console.warn("DVF " + String(year) + " error:"); }
   }
   if (allRows.length === 0) return { provider: "dvf", source: "csv", coverage: "no_data", reason: "Aucune donnee DVF trouvee pour " + dvfCode, kpis: { n: 0, median_price_m2: null, avg_price_m2: null, q1_price_m2: null, q3_price_m2: null }, comps: [] };
   const transactions: Array<{ price_m2: number; valeur: number; surface: number; record: any }> = [];
@@ -644,14 +642,14 @@ async function fetchDvfMarketStatsRpc(point: ResolvedPoint, radiusKm: number, mo
     let statsData: any = null, statsError: any = null;
     const attempt1 = await supabase.rpc("get_dvf_market_stats_radius", { p_lat: point.lat, p_lon: point.lon, p_months: months, p_radius_m: radiusM, p_type_local: typeLocal });
     if (attempt1.error) { const attempt2 = await supabase.rpc("get_dvf_market_stats_radius", { p_lat: point.lat, p_lon: point.lon, p_radius_m: radiusM, p_months: months, p_type_local: typeLocal }); if (attempt2.error) statsError = attempt2.error; else statsData = attempt2.data; } else statsData = attempt1.data;
-    if (statsError) return { stats: null, comps: [], error: statsError.message ?? String(statsError) };
+    if (statsError) return { stats: null, comps: [], error: "STATS_RPC_ERROR" };
     const row = unwrapRpcSingleRow(statsData); const rawStats = row?.stats ? row.stats : row;
     const stats: DvfMarketStats = { transactions_count: Number(rawStats?.transactions_count??0)||0, transactions_count_previous: Number(rawStats?.transactions_count_previous??0)||0, price_median_eur_m2: numOrNull(rawStats?.price_median_eur_m2), price_mean_eur_m2: numOrNull(rawStats?.price_mean_eur_m2), price_q1_eur_m2: numOrNull(rawStats?.price_q1_eur_m2), price_q3_eur_m2: numOrNull(rawStats?.price_q3_eur_m2), evolution_pct: numOrNull(rawStats?.evolution_pct), volume_total_eur: numOrNull(rawStats?.volume_total_eur), surface_mean_m2: numOrNull(rawStats?.surface_mean_m2) };
     const { data: compsData } = await supabase.rpc("get_dvf_comps_radius", { p_lat: point.lat, p_lon: point.lon, p_radius_m: Math.min(radiusM,1500), p_months: Math.min(months,12), p_type_local: typeLocal, p_limit: 15 });
     let comps: MarketComp[] = [];
     if (Array.isArray(compsData)) comps = compsData.map((c: any, idx: number) => ({ id: safeToString(c.id)??String(idx), address: safeToString(c.adresse)??undefined, price_m2: numOrNull(c.price_m2)??undefined, surface_m2: numOrNull(c.surface_m2)??undefined, date: safeToString(c.date_mutation)??undefined, type_local: safeToString(c.type_local)??undefined, distance_m: numOrNull(c.distance_m)??undefined, commune: safeToString(c.commune)??undefined }));
     return { stats, comps, error: null };
-  } catch (e) { console.error("fetchDvfMarketStatsRpc error"); return { stats: null, comps: [], error: String(e) }; }
+  } catch (e) { console.error("fetchDvfMarketStatsRpc error"); return { stats: null, comps: [], error: "DVF_STATS_ERROR" }; }
 }
 
 // ============================================================================
@@ -685,7 +683,7 @@ async function fetchBpeStats(lat: number, lon: number, radiusM = 500, communeIns
   try {
     const apiUrl = DATA_GOUV_BPE_API + "/" + BPE_RESOURCE_ID + "/data/?DEPCOM__exact=" + bpeCommune + "&page_size=2000";
     const resp = await fetch(apiUrl, { headers: { Accept: "application/json" } });
-    if (!resp.ok) { console.warn("BPE API error:", resp.status); if (supabase) return await fetchBpeStatsRpc(lat, lon, radiusM); return { scoreCommodites: null, details: null, coverage: "error" as Coverage, totalEquipements: 0 }; }
+    if (!resp.ok) { console.warn("BPE API error"); if (supabase) return await fetchBpeStatsRpc(lat, lon, radiusM); return { scoreCommodites: null, details: null, coverage: "error" as Coverage, totalEquipements: 0 }; }
     const json = await resp.json(); const records = json.data || [];
     if (records.length === 0) { if (supabase) return await fetchBpeStatsRpc(lat, lon, radiusM); }
     const byDomaine: Record<string, number> = {}; const santeByType: Record<string, { count: number; minDist: number | null }> = {};
@@ -751,7 +749,7 @@ async function fetchNearestPharmacyOverpass(lat: number, lon: number, maxRadiusM
         if (distance < minDistance) { minDistance = distance; const tags = el.tags || {}; nearest = { nom: tags.name || tags["name:fr"] || "Pharmacie", type: "Pharmacie", type_code: "OSM_PHARMACY", distance_m: Math.round(distance), distance_km: metersToKm(distance), adresse: [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ") || undefined, commune: tags["addr:city"] || tags["addr:municipality"] || undefined }; }
       }
       if (nearest) return nearest;
-    } catch (e) { if (debug) console.warn("OSM Overpass error (rayon " + String(radiusM) + "m):", e); }
+    } catch (e) { if (debug) console.warn("OSM Overpass error (rayon " + String(radiusM) + "m):"); }
   }
   return null;
 }
@@ -852,7 +850,7 @@ async function fetchEssentialServicesRaw(lat: number, lon: number, radiusM: numb
       signal: AbortSignal.timeout(30000),
     });
     if (!resp.ok) {
-      console.warn(`[Overpass essentials] HTTP ${resp.status} — fallback RPC`);
+      console.warn("[Overpass essentials] HTTP error — fallback RPC");
       const rpcItems = await fetchEssentialServicesViaRpc(lat, lon, radiusM, debug);
       return { items: rpcItems, type_codes_sent: type_codes };
     }
@@ -894,7 +892,7 @@ async function fetchEssentialServicesRaw(lat: number, lon: number, radiusM: numb
     }
     return result;
   } catch (e) {
-    console.warn("[Overpass essentials] Exception — fallback RPC:", String(e));
+    console.warn("[Overpass essentials] Exception — fallback RPC");
     const rpcItems = await fetchEssentialServicesViaRpc(lat, lon, radiusM, debug);
     return { items: rpcItems, type_codes_sent: type_codes };
   }
@@ -923,7 +921,7 @@ async function fetchResidencesSeniors(lat: number, lon: number, radiusKm: number
     for (const r of data) { const rLat = parseFloat((r as any).latitude); const rLon = parseFloat((r as any).longitude); if (Number.isNaN(rLat)||Number.isNaN(rLon)) continue; const dist = haversineDistance(lat, lon, rLat, rLon); if (dist <= radiusKm*1000) residences.push({ nom: (r as any).raison_sociale||"Residence seniors", type: (r as any).categorie||"Residence seniors", commune: (r as any).commune||"", distance_km: metersToKm(dist), finess: (r as any).finess }); }
     residences.sort((a,b)=>a.distance_km-b.distance_km);
     return residences.slice(0,10);
-  } catch (e) { if (debug) console.warn("fetchResidencesSeniors exception:", e); return []; }
+  } catch (e) { if (debug) console.warn("fetchResidencesSeniors exception:"); return []; }
 }
 
 // ============================================================================
@@ -954,7 +952,7 @@ async function fetchTransportScoreIdfm(lat: number, lon: number, radiusM: number
     console.log(`[IDFM fallback] ${n} arrêts uniques à ${radiusM}m → score ${score} (rail: ${hasHeavyRail})`);
     return score;
   } catch (e) {
-    console.warn("[fetchTransportScoreIdfm] erreur:", String(e));
+    console.warn("[fetchTransportScoreIdfm] erreur");
     return null;
   }
 }
@@ -1029,7 +1027,7 @@ async function fetchTransportScore(
         }
       }
       console.warn("[Transport GTFS] réponse invalide ou score=0, fallback OSM");
-    } catch (e) { console.warn("[Transport GTFS] indisponible:", String(e)); }
+    } catch (e) { console.warn("[Transport GTFS] indisponible"); }
   }
 
   // Hors métro ET GTFS vide → non applicable
@@ -1052,7 +1050,7 @@ async function fetchTransportScore(
           return { score, label: safeToString(scoring.label), summary: safeToString(scoring.summary), coverage: "ok", applicable: true };
         }
       }
-    } catch (e) { console.warn("[fetchTransportScore] /transport-score indisponible:", String(e)); }
+    } catch (e) { console.warn("[fetchTransportScore] /transport-score indisponible"); }
   }
 
   // ── Tentative 3 : IDFM live (IDF uniquement) ──────────────────────────────
@@ -1089,7 +1087,7 @@ async function fetchHopitalProche(lat: number, lon: number, maxRadiusKm: number 
     let closest: HopitalProche = null; let minDistance = Infinity;
     for (const h of finessData) { const hLat = parseFloat(h.latitude); const hLon = parseFloat(h.longitude); if (isNaN(hLat)||isNaN(hLon)) continue; const dist = haversineDistance(lat,lon,hLat,hLon); if (dist < minDistance && dist <= maxRadiusKm*1000) { minDistance = dist; closest = { nom: h.raison_sociale||"Hopital", commune: h.commune||"", distance_km: Math.round(dist/100)/10, type: h.categorie||"Etablissement de sante" }; } }
     return closest;
-  } catch (e) { console.warn("[fetchHopitalProche] error:", e); return null; }
+  } catch (e) { console.warn("[fetchHopitalProche] error:"); return null; }
 }
 
 async function enrichHealthData(lat: number, lon: number, healthData: HealthFicheEnriched | null, bpeSanteDetails: Array<{ type: string; label: string; count: number; min_distance_m: number | null }> | null, medecinsProches?: MedecinProche[]): Promise<HealthFicheEnriched | null> {
@@ -1125,7 +1123,7 @@ async function fetchInseeSocioEco(communeCode: string, debug = false): Promise<{
   if (!supabase) { debugInfo.error = "supabase non initialise"; return { data: null, debugInfo }; }
   try {
     const { data, error } = await supabase.from("insee_socioeco_communes").select("*").eq("code_commune", communeCode).limit(1).maybeSingle();
-    if (error) { debugInfo.error = "Supabase error: " + (error.message||String(error)); return { data: null, debugInfo }; }
+    if (error) { debugInfo.error = "SUPABASE_ERROR"; return { data: null, debugInfo }; }
     if (!data) { debugInfo.error = "commune non trouvee dans insee_socioeco_communes"; return { data: null, debugInfo }; }
     debugInfo.found = true;
     const result: InseeSocioEcoData = { code_commune: communeCode, commune: data.commune||null, revenu_median: data.revenu_median_eur!=null?Number(data.revenu_median_eur):null, taux_chomage: data.taux_chomage_pct!=null?parseFloat(String(data.taux_chomage_pct)):null, taux_pauvrete: data.taux_pauvrete_pct!=null?parseFloat(String(data.taux_pauvrete_pct)):null, pct_proprietaires: data.pct_proprietaires!=null?parseFloat(String(data.pct_proprietaires)):null, pension_retraite_moyenne: data.pension_retraite_moyenne_eur_mois!=null?Number(data.pension_retraite_moyenne_eur_mois):null, annee: data.annee!=null?Number(data.annee):null, source: data.source||null };
@@ -1133,7 +1131,7 @@ async function fetchInseeSocioEco(communeCode: string, debug = false): Promise<{
     if (result.revenu_median!=null) fieldsPresent.push("revenu_median"); if (result.taux_chomage!=null) fieldsPresent.push("taux_chomage"); if (result.taux_pauvrete!=null) fieldsPresent.push("taux_pauvrete"); if (result.pct_proprietaires!=null) fieldsPresent.push("pct_proprietaires"); if (result.pension_retraite_moyenne!=null) fieldsPresent.push("pension_retraite_moyenne");
     debugInfo.ok = true; debugInfo.fields_present = fieldsPresent;
     return { data: result, debugInfo };
-  } catch (e) { debugInfo.error = "Exception: " + String(e); return { data: null, debugInfo }; }
+  } catch (e) { debugInfo.error = "EXCEPTION"; return { data: null, debugInfo }; }
 }
 
 async function fetchInseeStatsHybrid(communeInsee: string | null, debug = false): Promise<{ data: InseeHybridData | null; coverage: Coverage; socioEcoDebug?: InseeSocioEcoDebug }> {
@@ -1313,13 +1311,13 @@ async function computeSmartScoreV4Block(params: {
   const essServicesResult = computeEssentialServicesScore(essentialServices);
   const ruralAccessResult: RuralAccessibilityResult | null = isRural ? computeRuralAccessibilityScore(servicesRuraux, essentialServices) : null;
   let priceTrend: any = null, liquidity: any = null, rentalTension: any = null, marketComposite: any = null;
-  try { priceTrend = computePriceTrend(dvfStats); liquidity = computeLiquidityScore(dvfStats, horizonMonths); rentalTension = communeInsee ? await computeRentalTension(communeInsee) : null; marketComposite = computeMarketComposite({ priceTrend, liquidity, rentalTension }); } catch (e) { console.warn("[SmartScore V4] market_intelligence error:", e); }
+  try { priceTrend = computePriceTrend(dvfStats); liquidity = computeLiquidityScore(dvfStats, horizonMonths); rentalTension = communeInsee ? await computeRentalTension(communeInsee) : null; marketComposite = computeMarketComposite({ priceTrend, liquidity, rentalTension }); } catch (e) { console.warn("[SmartScore V4] market_intelligence error:"); }
   let georisquesScore: any = null, dpeResult: any = null, airResult: any = null, noiseResult: any = null, environmentResult: any = null;
-  try { georisquesScore = communeInsee ? await computeGeorisquesScore(communeInsee) : null; dpeResult = communeInsee ? await fetchDpeQuartier(communeInsee, lat, lon) : null; airResult = await fetchAirQuality(lat, lon); noiseResult = estimateNoiseScore(transportScore, isRural); environmentResult = computeEnvironmentScore({ georisques: georisquesScore, dpe: dpeResult, air: airResult, noise: noiseResult }); } catch (e) { console.warn("[SmartScore V4] environment error:", e); }
+  try { georisquesScore = communeInsee ? await computeGeorisquesScore(communeInsee) : null; dpeResult = communeInsee ? await fetchDpeQuartier(communeInsee, lat, lon) : null; airResult = await fetchAirQuality(lat, lon); noiseResult = estimateNoiseScore(transportScore, isRural); environmentResult = computeEnvironmentScore({ georisques: georisquesScore, dpe: dpeResult, air: airResult, noise: noiseResult }); } catch (e) { console.warn("[SmartScore V4] environment error:"); }
   let popTrendResult: PopulationTrendResult | null = null, demographicScore: any = null;
-  try { const dr = communeInsee ? await computeDemographicScore(communeInsee, inseeData, projectNature) : null; if (dr) { popTrendResult = dr.populationTrend ?? null; demographicScore = dr; } } catch (e) { console.warn("[SmartScore V4] demographic error:", e); }
+  try { const dr = communeInsee ? await computeDemographicScore(communeInsee, inseeData, projectNature) : null; if (dr) { popTrendResult = dr.populationTrend ?? null; demographicScore = dr; } } catch (e) { console.warn("[SmartScore V4] demographic error:"); }
   let competitionResult: CompetitionScoreResult | null = null;
-  try { const permis = communeInsee ? await fetchPermisProches(communeInsee, lat, lon) : null; competitionResult = permis ? computeCompetitionScore(permis, projectNature) : null; } catch (e) { console.warn("[SmartScore V4] competition error:", e); }
+  try { const permis = communeInsee ? await fetchPermisProches(communeInsee, lat, lon) : null; competitionResult = permis ? computeCompetitionScore(permis, projectNature) : null; } catch (e) { console.warn("[SmartScore V4] competition error:"); }
   let priceOpportunityScore: number | null = null, priceOpportunityDetail: any = null;
   if (prix_m2_bien != null && dvfStats?.price_median_eur_m2 != null && dvfStats.price_median_eur_m2 > 0) {
     const ratio = prix_m2_bien / dvfStats.price_median_eur_m2;
@@ -1390,7 +1388,7 @@ async function handleMarketStudy(payload: MarketStudyPayload): Promise<Response>
       if (!servicesRuraux.commissariat_proche && spServices.commissariat_proche) servicesRuraux.commissariat_proche = spServices.commissariat_proche;
       if (!servicesRuraux.gendarmerie_proche && spServices.gendarmerie_proche) servicesRuraux.gendarmerie_proche = spServices.gendarmerie_proche;
       if (!servicesRuraux.medecin_proche && spServices.medecin_proche) servicesRuraux.medecin_proche = spServices.medecin_proche;
-    } catch (e) { console.warn("[servicesProximiteV1] error (non-blocking):", e); }
+    } catch (e) { console.warn("[servicesProximiteV1] error (non-blocking):"); }
   }
   if (!servicesRuraux.pharmacie_proche) {
     const osmPharmacy = await fetchNearestPharmacyOverpass(point.lat, point.lon, RAYON_RURAL_MAX_M, debug);
@@ -1473,7 +1471,7 @@ async function handleMarketStudy(payload: MarketStudyPayload): Promise<Response>
 // ============================================================================
 async function handleStandard(payload: StandardPayload): Promise<Response> {
   const { address, cp, ville, surface, prix, travaux, userCriteria, meloId, type_local, dep_code, commune_code, parcel_id, commune_insee, transports, radius_km = 2, horizon_months = 24, dpe_label = null, debug = false } = payload;
-  if (!supabase) return json({ success: false, error: "Supabase non initialise", mode: "standard", version: "v4.4" }, 500);
+  if (!supabase) return json({ success: false, error: "INTERNAL_ERROR", mode: "standard", version: "v4.4" }, 500);
   const { point, error: pointError } = await resolveStandardPoint(payload);
   if (!point) return json({ success: false, error: pointError ?? "Impossible de resoudre le point d'analyse.", mode: "standard", version: "v4.4" }, 400);
   const communeInseeFinal = point.commune_insee ?? commune_insee?.toString() ?? commune_code ?? null;
@@ -1513,7 +1511,7 @@ async function handleStandard(payload: StandardPayload): Promise<Response> {
     if (!servicesRuraux.commissariat_proche && spServices.commissariat_proche) servicesRuraux.commissariat_proche = spServices.commissariat_proche;
     if (!servicesRuraux.gendarmerie_proche && spServices.gendarmerie_proche) servicesRuraux.gendarmerie_proche = spServices.gendarmerie_proche;
     if (!servicesRuraux.medecin_proche && spServices.medecin_proche) servicesRuraux.medecin_proche = spServices.medecin_proche;
-  } catch (e) { console.warn("[Standard] servicesProximiteV1 error (non-blocking):", e); }
+  } catch (e) { console.warn("[Standard] servicesProximiteV1 error (non-blocking):"); }
   if (!servicesRuraux.pharmacie_proche) {
     const osmPharmacy = await fetchNearestPharmacyOverpass(point.lat, point.lon, RAYON_RURAL_MAX_M, debug);
     if (osmPharmacy) servicesRuraux.pharmacie_proche = osmPharmacy;

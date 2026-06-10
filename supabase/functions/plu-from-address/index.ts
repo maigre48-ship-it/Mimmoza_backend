@@ -61,7 +61,6 @@ type PluFromAddressResponse = {
   geocoding?: {
     lon: number;
     lat: number;
-    raw?: unknown;
   };
   parcel?: ParcelInfo | null;
   plu?: PluForParcelResult | null;
@@ -94,15 +93,12 @@ type DownloadResult =
       success: true;
       level: "commune" | "departement";
       geojson: any;
-      url: string;
       statusCommune?: number;
       statusDepartement?: number;
     }
   | {
       success: false;
       error: "NO_GEOJSON";
-      urlCommune: string;
-      urlDepartement: string;
       statusCommune?: number;
       statusDepartement?: number;
     };
@@ -117,8 +113,6 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
-
-console.log("✅ plu-from-address – function loaded");
 
 // -------------------------------------------------
 // Helpers – toujours HTTP 200
@@ -158,24 +152,22 @@ function badRequest(
 
 async function geocodeAddress(
   address: string,
-): Promise<{ lon: number; lat: number; raw: unknown } | null> {
+): Promise<{ lon: number; lat: number } | null> {
   const url = `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(
     address,
   )}&limit=1`;
 
-  console.log("geocodeAddress URL:", url);
-
   const res = await fetch(url);
 
   if (!res.ok) {
-    console.error("Geocoding HTTP error:", res.status, await res.text());
+    console.error("[plu-from-address] geocodeAddress error");
     return null;
   }
 
   const data = (await res.json()) as any;
 
   if (!data?.features?.length) {
-    console.warn("geocodeAddress: aucune feature trouvée");
+    console.error("[plu-from-address] geocodeAddress error");
     return null;
   }
 
@@ -183,12 +175,11 @@ async function geocodeAddress(
   const [lon, lat] = feature.geometry?.coordinates ?? [];
 
   if (typeof lon !== "number" || typeof lat !== "number") {
-    console.warn("geocodeAddress: coordonnées invalides", feature.geometry);
+    console.error("[plu-from-address] geocodeAddress error");
     return null;
   }
 
-  console.log("geocodeAddress OK:", { lon, lat });
-  return { lon, lat, raw: feature };
+  return { lon, lat };
 }
 
 // -------------------------------------------------
@@ -202,28 +193,24 @@ async function getCommuneFromLatLon(
   const url =
     `https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lon}&format=json`;
 
-  console.log("getCommuneFromLatLon URL:", url);
-
   try {
     const res = await fetch(url);
-    console.log("getCommuneFromLatLon status:", res.status);
 
     if (!res.ok) {
-      console.error("getCommuneFromLatLon HTTP error:", res.status);
+      console.error("[plu-from-address] getCommuneFromLatLon error");
       return null;
     }
 
     const json = await res.json();
-    console.log("getCommuneFromLatLon raw json:", json);
 
     if (!Array.isArray(json) || json.length === 0) {
-      console.warn("getCommuneFromLatLon: aucune commune trouvée");
+      console.error("[plu-from-address] getCommuneFromLatLon error");
       return null;
     }
 
     const c = json[0];
     if (!c.code || !c.codeDepartement) {
-      console.warn("getCommuneFromLatLon: réponse incomplète", c);
+      console.error("[plu-from-address] getCommuneFromLatLon error");
       return null;
     }
 
@@ -233,11 +220,6 @@ async function getCommuneFromLatLon(
     // Normalisation spéciale Paris : arrondissements 75101–75120 → 75056
     let normalizedCode = rawCode;
     if (depCode === "75" && rawCode.startsWith("751")) {
-      console.log(
-        "Normalisation Paris : arrondissement",
-        rawCode,
-        "→ 75056",
-      );
       normalizedCode = "75056";
     }
 
@@ -248,10 +230,9 @@ async function getCommuneFromLatLon(
       codeCadastre: rawCode,
     };
 
-    console.log("Commune trouvée:", commune);
     return commune;
-  } catch (e) {
-    console.error("Exception getCommuneFromLatLon:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] getCommuneFromLatLon error");
     return null;
   }
 }
@@ -277,10 +258,8 @@ async function downloadParcellesGeoJSONWithFallback(
   let statusDepartement: number | undefined;
 
   try {
-    console.log("Tentative commune Etalab:", urlCommune);
     const resCommune = await fetch(urlCommune);
     statusCommune = resCommune.status;
-    console.log("Commune status:", statusCommune);
 
     if (resCommune.ok && resCommune.body) {
       const ds = new DecompressionStream("gzip");
@@ -293,28 +272,22 @@ async function downloadParcellesGeoJSONWithFallback(
         geojson.type === "FeatureCollection" &&
         Array.isArray(geojson.features)
       ) {
-        console.log(
-          `GeoJSON commune chargé avec ${geojson.features.length} features`,
-        );
         return {
           success: true,
           level: "commune",
           geojson,
-          url: urlCommune,
           statusCommune,
         };
       }
     }
-  } catch (e) {
-    console.error("Erreur commune Etalab:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] downloadParcelles commune error");
   }
 
   // Fallback département
   try {
-    console.log("Tentative département Etalab:", urlDepartement);
     const resDep = await fetch(urlDepartement);
     statusDepartement = resDep.status;
-    console.log("Département status:", statusDepartement);
 
     if (resDep.ok && resDep.body) {
       const ds = new DecompressionStream("gzip");
@@ -327,29 +300,23 @@ async function downloadParcellesGeoJSONWithFallback(
         geojson.type === "FeatureCollection" &&
         Array.isArray(geojson.features)
       ) {
-        console.log(
-          `GeoJSON département chargé avec ${geojson.features.length} features`,
-        );
         return {
           success: true,
           level: "departement",
           geojson,
-          url: urlDepartement,
           statusCommune,
           statusDepartement,
         };
       }
     }
-  } catch (e) {
-    console.error("Erreur département Etalab:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] downloadParcelles departement error");
   }
 
-  console.error("NO_GEOJSON pour", { urlCommune, urlDepartement });
+  console.error("[plu-from-address] downloadParcelles error");
   return {
     success: false,
     error: "NO_GEOJSON",
-    urlCommune,
-    urlDepartement,
     statusCommune,
     statusDepartement,
   };
@@ -419,9 +386,7 @@ function pickNearestParcel(
   }
 
   if (!bestFeature) {
-    console.warn(
-      "pickNearestParcel: aucune parcelle trouvée proche du point",
-    );
+    console.error("[plu-from-address] pickNearestParcel error");
     return null;
   }
 
@@ -462,7 +427,6 @@ function pickNearestParcel(
     geometry: bestFeature.geometry ?? null,
   };
 
-  console.log("Parcelle choisie (Etalab):", parcel.id);
   return parcel;
 }
 
@@ -474,7 +438,7 @@ async function upsertParcelIntoCache(
   parcel: EtalabParcel,
 ): Promise<any> {
   if (!parcel.id) {
-    console.warn("parcel sans id → pas d'upsert cache");
+    console.error("[plu-from-address] upsertParcelIntoCache error");
     return parcel;
   }
 
@@ -492,11 +456,10 @@ async function upsertParcelIntoCache(
   );
 
   if (error) {
-    console.error("cadastre_upsert_parcelle_from_etalab error:", error);
+    console.error("[plu-from-address] upsertParcelIntoCache error");
     return parcel;
   }
 
-  console.log("Parcelle upsert dans cache:", data);
   return data;
 }
 
@@ -509,12 +472,10 @@ async function findParcelForPoint(
   lat: number,
 ): Promise<ParcelInfo | null> {
   try {
-    console.log("findParcelForPoint input:", { lon, lat });
-
     // 1) Commune
     const commune = await getCommuneFromLatLon(lat, lon);
     if (!commune) {
-      console.error("Aucune commune trouvée pour ce point");
+      console.error("[plu-from-address] findParcelForPoint error");
       return null;
     }
 
@@ -526,7 +487,7 @@ async function findParcelForPoint(
     );
 
     if (!download.success) {
-      console.error("NO_GEOJSON:", download);
+      console.error("[plu-from-address] findParcelForPoint error");
       return null;
     }
 
@@ -535,7 +496,7 @@ async function findParcelForPoint(
     // 3) Parcelle la plus proche
     const parcelEt = pickNearestParcel(geojson, lat, lon, commune);
     if (!parcelEt) {
-      console.error("NO_PARCEL_FOUND dans GeoJSON");
+      console.error("[plu-from-address] findParcelForPoint error");
       return null;
     }
 
@@ -554,7 +515,7 @@ async function findParcelForPoint(
       null;
 
     if (!parcelId) {
-      console.error("Parcelle upsert sans id:", p);
+      console.error("[plu-from-address] findParcelForPoint error");
       return null;
     }
 
@@ -580,10 +541,9 @@ async function findParcelForPoint(
       commune_insee: communeInsee,
     };
 
-    console.log("findParcelForPoint – ParcelInfo:", parcel);
     return parcel;
-  } catch (e) {
-    console.error("Error in findParcelForPoint:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] findParcelForPoint error");
     return null;
   }
 }
@@ -608,27 +568,18 @@ async function getPluRulesForZoneFromDb(
       .maybeSingle();
 
     if (error) {
-      console.error("getPluRulesForZoneFromDb error:", error);
+      console.error("[plu-from-address] getPluRulesForZoneFromDb error");
       return null;
     }
 
     if (!data || !data.rules) {
-      console.warn(
-        "getPluRulesForZoneFromDb: aucun ruleset pour",
-        communeInsee,
-        zoneCode,
-      );
+      console.error("[plu-from-address] getPluRulesForZoneFromDb error");
       return null;
     }
 
-    console.log(
-      "getPluRulesForZoneFromDb: rules trouvées pour",
-      communeInsee,
-      zoneCode,
-    );
     return data.rules as PluRuleset;
-  } catch (e) {
-    console.error("Exception getPluRulesForZoneFromDb:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] getPluRulesForZoneFromDb error");
     return null;
   }
 }
@@ -642,22 +593,18 @@ async function getPluForParcel(
   parcel: ParcelInfo,
 ): Promise<PluForParcelResult | null> {
   try {
-    console.log("getPluForParcel: call RPC get_plu_rules_for_parcelle", {
-      parcel_id: parcel.parcel_id,
-    });
-
     const { data, error } = await supabase.rpc(
       "get_plu_rules_for_parcelle",
       { p_parcel_id: parcel.parcel_id },
     );
 
     if (error) {
-      console.error("get_plu_rules_for_parcelle RPC error:", error);
+      console.error("[plu-from-address] getPluForParcel error");
       return null;
     }
 
     if (!data) {
-      console.warn("get_plu_rules_for_parcelle: data null");
+      console.error("[plu-from-address] getPluForParcel error");
       return {
         found: false,
         zone: null,
@@ -671,7 +618,7 @@ async function getPluForParcel(
     const result = data as any;
 
     if (!result.found) {
-      console.warn("get_plu_rules_for_parcelle: PLU non trouvé:", result);
+      console.error("[plu-from-address] getPluForParcel error");
       return {
         found: false,
         zone: null,
@@ -710,10 +657,9 @@ async function getPluForParcel(
       source,
     };
 
-    console.log("getPluForParcel OK:", final);
     return final;
-  } catch (e) {
-    console.error("Exception getPluForParcel:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] getPluForParcel error");
     return null;
   }
 }
@@ -803,8 +749,8 @@ serve(async (req: Request): Promise<Response> => {
     };
 
     return jsonResponse(response);
-  } catch (e) {
-    console.error("Unhandled error in plu-from-address:", e);
+  } catch (_e) {
+    console.error("[plu-from-address] handler error");
     return jsonResponse({
       success: false,
       version: "plu-from-address-v1",

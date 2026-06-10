@@ -1,5 +1,5 @@
 // supabase/functions/plu-extract-article-v1/index.ts
-// Version : v1.1 – fallback sur le texte envoyé si l’article n’est pas trouvé dans le JSON
+// Version : v1.2 — security hardening, no raw article leak in responses/logs
 
 // -----------------------------------------------------------------------------
 // CORS helpers
@@ -16,33 +16,35 @@ function jsonResponse(
   init: ResponseInit = {},
 ): Response {
   const headers = new Headers(init.headers || {});
+
   for (const [k, v] of Object.entries(corsHeaders)) {
     headers.set(k, v);
   }
+
   headers.set("Content-Type", "application/json; charset=utf-8");
+
   return new Response(JSON.stringify(body), { ...init, headers });
 }
 
 // -----------------------------------------------------------------------------
-// Petit parseur pour extraire l’emprise max (ratio) à partir d’un texte type UC9
-// Exemple : “L’emprise au sol … ne doit pas excéder 40% …”  →  0.4
+// Parser local : emprise max en ratio
 // -----------------------------------------------------------------------------
 function parseEmpriseMaxRatio(text: string): number | null {
-  // On cherche le premier "nombre %" dans le texte
   const regex = /(\d+(?:[.,]\d+)?)\s*%/;
   const match = text.match(regex);
+
   if (!match) return null;
 
   const raw = match[1].replace(",", ".");
   const value = Number(raw);
-  if (isNaN(value)) return null;
+
+  if (isNaN(value) || value < 0 || value > 100) return null;
 
   return value / 100;
 }
 
 // -----------------------------------------------------------------------------
 // Lecture optionnelle du fichier ascain-uc-articles.json
-// (si présent et accessible, sinon on continue sans lui)
 // -----------------------------------------------------------------------------
 type ArticleRecord = {
   article_id: string;
@@ -61,9 +63,10 @@ async function loadArticleFromJson(
     if (!Array.isArray(data)) return null;
 
     const found = data.find((a: ArticleRecord) => a.article_id === articleId);
+
     return found ?? null;
-  } catch (err) {
-    console.error("Erreur lecture ascain-uc-articles.json :", err);
+  } catch (_e) {
+    console.error("[plu-extract-article-v1] local article load failed");
     return null;
   }
 }
@@ -72,76 +75,94 @@ async function loadArticleFromJson(
 // Edge function handler
 // -----------------------------------------------------------------------------
 Deno.serve(async (req: Request): Promise<Response> => {
-  // Pré-vol CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   if (req.method !== "POST") {
     return jsonResponse(
-      { success: false, error: "Method not allowed" },
+      {
+        success: false,
+        error: "METHOD_NOT_ALLOWED",
+      },
       { status: 405 },
     );
   }
 
-  let input: any;
+  let input: Record<string, unknown>;
+
   try {
-    input = await req.json();
-  } catch (_err) {
-    return jsonResponse(
-      { success: false, error: "Invalid JSON body" },
-      { status: 400 },
-    );
-  }
-
-  const { article_id, commune_insee } = input;
-  const textFromBody: string | undefined =
-    input.text ?? input.article_text ?? undefined;
-
-  if (!article_id) {
-    return jsonResponse(
-      { success: false, error: "Missing field: article_id" },
-      { status: 400 },
-    );
-  }
-
-  // 1) On essaie de charger l’article depuis le JSON (si dispo)
-  const articleFromJson = await loadArticleFromJson(article_id);
-  const textFromJson: string | undefined = articleFromJson?.article_text;
-
-  // 2) On choisit le texte "brut" à analyser :
-  //    priorité au texte envoyé dans la requête, sinon celui du JSON
-  const brut: string | undefined = textFromBody ?? textFromJson;
-
-  if (!brut) {
-    // Ici SEULEMENT on renvoie une erreur, si on n’a VRAIMENT aucun texte
+    input = (await req.json()) as Record<string, unknown>;
+  } catch (_e) {
     return jsonResponse(
       {
         success: false,
-        article_id,
-        error:
-          `Aucun texte trouvé pour l’article ${article_id} (ni dans le body, ni dans ascain-uc-articles.json)`,
+        error: "INVALID_JSON_BODY",
+      },
+      { status: 400 },
+    );
+  }
+
+  const articleIdRaw = input.article_id;
+  const communeInseeRaw = input.commune_insee;
+
+  const article_id =
+    typeof articleIdRaw === "string" ? articleIdRaw.trim() : "";
+
+  const commune_insee =
+    typeof communeInseeRaw === "string" ? communeInseeRaw.trim() : null;
+
+  const textRaw = input.text ?? input.article_text;
+  const textFromBody =
+    typeof textRaw === "string" && textRaw.trim().length > 0
+      ? textRaw
+      : undefined;
+
+  if (!article_id) {
+    return jsonResponse(
+      {
+        success: false,
+        error: "INVALID_INPUT",
+      },
+      { status: 400 },
+    );
+  }
+
+  const articleFromJson = await loadArticleFromJson(article_id);
+
+  const textFromJson =
+    typeof articleFromJson?.article_text === "string" &&
+    articleFromJson.article_text.trim().length > 0
+      ? articleFromJson.article_text
+      : undefined;
+
+  const brut = textFromBody ?? textFromJson;
+
+  if (!brut) {
+    return jsonResponse(
+      {
+        success: false,
+        error: "ARTICLE_TEXT_NOT_FOUND",
       },
       { status: 404 },
     );
   }
 
-  // 3) On applique notre parseur "UC9 style" (emprise max en %)
   const emprise_max_ratio = parseEmpriseMaxRatio(brut);
 
-  const parsed = {
-    emprise_max_ratio,
-  };
-
-  return jsonResponse({
-    success: true,
-    article_id,
-    commune_insee: commune_insee ?? null,
-    parsed,
-    brut,
-    source: {
-      from_body: !!textFromBody,
-      from_json: !!textFromJson,
+  return jsonResponse(
+    {
+      success: true,
+      article_id,
+      commune_insee,
+      parsed: {
+        emprise_max_ratio,
+      },
+      source: {
+        from_body: Boolean(textFromBody),
+        from_json: Boolean(textFromJson),
+      },
     },
-  });
+    { status: 200 },
+  );
 });

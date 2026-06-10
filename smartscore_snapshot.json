@@ -1,0 +1,57 @@
+﻿{
+    "ok":  true,
+    "market_keys":  [
+                        "project_type",
+                        "config",
+                        "indices",
+                        "kpis",
+                        "comps",
+                        "verdict",
+                        "insights",
+                        "modules"
+                    ],
+    "insee":  null,
+    "bpe":  null,
+    "services_ruraux":  null,
+    "amenities":  null,
+    "services":  null,
+    "input":  null,
+    "debug":  {
+                  "dvfSource":  "csv:2025,2024,2023",
+                  "bpeResult":  {
+                                    "coverage":  "ok",
+                                    "totalEquipements":  2000,
+                                    "scoreCommodites":  100
+                                },
+                  "essential_services_debug":  {
+                                                   "radius_m":  20000,
+                                                   "type_codes_sent_count":  44,
+                                                   "raw_items_count":  0,
+                                                   "counts_by_bucket":  {
+                                                                            "pharmacie":  0,
+                                                                            "banque_dab":  0,
+                                                                            "poste":  0,
+                                                                            "station_service":  0,
+                                                                            "commerce_alimentaire":  0,
+                                                                            "medecin_generaliste":  0,
+                                                                            "medecin_specialiste":  0,
+                                                                            "dentiste":  0,
+                                                                            "infirmier":  0,
+                                                                            "kinesitherapeute":  0,
+                                                                            "gendarmerie":  0,
+                                                                            "commissariat":  0
+                                                                        }
+                                               },
+                  "transportResult":  {
+                                          "score":  null,
+                                          "label":  "Non applicable",
+                                          "summary":  "Hors grande agglomeration - critere non evalue",
+                                          "coverage":  "ok",
+                                          "applicable":  false
+                                      },
+                  "pharmacieFallback":  {
+                                            "source":  "OSM_Overpass",
+                                            "distance_km":  0.1
+                                        }
+              }
+}

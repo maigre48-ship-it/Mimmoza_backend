@@ -779,7 +779,7 @@ async function fetchFilosofiForCode(code: string): Promise<{
     taux_pauvrete: pauv,
     part_imposes: impos,
     last_updated: filosofiCache?.last_updated ?? null,
-    csv_url: filosofiCache?.csv_url ?? null,
+    csv_url: null,
     incomeMedianUcYear: incomeYear,
     detected_keys: { medianKey, pauvKey, imposKey },
   };

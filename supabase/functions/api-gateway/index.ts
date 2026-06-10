@@ -221,13 +221,29 @@ Deno.serve(async (req: Request) => {
 
   const responseText = await internalResponse.text();
 
-  return new Response(responseText, {
-    status: internalResponse.status,
-    headers: copySafeResponseHeaders(
-      internalResponse,
-      latency,
-      key.requests_limit,
-      key.requests_limit - key.requests_count - 1,
-    ),
-  });
+if (internalResponse.status >= 500) {
+  return jsonResponse(
+    {
+      error: "INTERNAL_UPSTREAM_ERROR",
+    },
+    502,
+    {
+      "X-Response-Time": `${latency}ms`,
+      "X-RateLimit-Limit": String(key.requests_limit),
+      "X-RateLimit-Remaining": String(
+        Math.max(0, key.requests_limit - key.requests_count - 1),
+      ),
+    },
+  );
+}
+
+return new Response(responseText, {
+  status: internalResponse.status,
+  headers: copySafeResponseHeaders(
+    internalResponse,
+    latency,
+    key.requests_limit,
+    key.requests_limit - key.requests_count - 1,
+  ),
+});
 });
