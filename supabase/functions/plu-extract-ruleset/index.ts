@@ -1,15 +1,5 @@
 // supabase/functions/plu-extract-ruleset/index.ts
-// Version : plu-extract-ruleset-v1 + heuristiques locales
-//
-// Objectif :
-//  - Entrée : texte brut du règlement d’une ZONE de PLU (UC, UG, etc.)
-//  - Sortie : JSON normalisé PLURulesetV2, enrichi si possible par des heuristiques
-//  - Optionnel : enregistre dans la table plu_rulesets
-//
-// Dépendances :
-//  - @supabase/supabase-js v2
-//  - ../_shared/cors.ts
-//  - Variable d'env OPENAI_API_KEY
+// Version : v2.1 — security hardening, no sensitive logs/responses
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -19,22 +9,12 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 
-// Optionnel : nom de la table Supabase où on stocke les règles PLU
 const PLU_RULESETS_TABLE = "plu_rulesets";
-
-// Modèle OpenAI utilisé (tu peux ajuster)
 const OPENAI_MODEL = "gpt-4.1-mini";
 
-// -------------------------------------------------
-// Client Supabase (service role)
-// -------------------------------------------------
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
-
-// -------------------------------------------------
-// Types
-// -------------------------------------------------
 
 type PluExtractInput = {
   commune_insee: string;
@@ -57,369 +37,237 @@ type JsonValue =
 type PluExtractResponse = {
   success: boolean;
   version: string;
-  inputs?: PluExtractInput;
   ruleset?: JsonValue;
   db?: {
     saved: boolean;
-    record_id?: string;
-    table?: string;
-    error?: string;
   };
   error?: string;
-  details?: unknown;
 };
 
-// -------------------------------------------------
-// Prompt système : définit le format PLURulesetV2 + consignes strictes
-// -------------------------------------------------
+function jsonResponse(body: PluExtractResponse, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 const SYSTEM_PROMPT = `
 Tu es un expert en urbanisme français et en PLU.
 Ta tâche est de convertir un règlement de zone de PLU (texte brut) en un JSON strictement au format PLURulesetV2.
-
-Le schéma PLURulesetV2 est le suivant (types conceptuels) :
-
-type PLURulesetV2 = {
-  meta: {
-    commune_insee: string;
-    commune_nom: string;
-    zone_code: string;
-    secteur?: string | null;
-    source_label: string;
-    source_type: "pdf_upload" | "plui" | "test" | "autre";
-  };
-
-  usages: {
-    autorises: string[];
-    interdits?: string[];
-    sous_conditions?: string[];
-  };
-
-  implantation: {
-    alignement_rue?: "obligatoire" | "facultatif" | "interdit" | null;
-    recul_min_rue_m?: number | null;
-    recul_min_limite_laterale_m?: number | null;
-    recul_min_fond_parcelle_m?: number | null;
-    regles_prospect?: string | null;
-  };
-
-  densite_emprise: {
-    emprise_max_ratio?: number | null;
-    emprise_max_surface_m2?: number | null;
-    cos_existe: boolean;
-    cos_max?: number | null;
-    max_sdp_m2_par_m2_terrain?: number | null;
-    commentaires?: string | null;
-  };
-
-  hauteurs: {
-    h_max_egout_m?: number | null;
-    h_max_faitage_m?: number | null;
-    nb_niveaux_max?: number | null;
-    secteurs_overrides?: {
-      [secteurCode: string]: {
-        h_max_egout_m?: number | null;
-        h_max_faitage_m?: number | null;
-        nb_niveaux_max?: number | null;
-      };
-    };
-    regle_prospect?: string | null;
-    commentaires?: string | null;
-  };
-
-  pleine_terre: {
-    ratio_min?: number | null;
-    commentaire?: string | null;
-  };
-
-  stationnement: {
-    logement?: {
-      places_par_logement?: number | null;
-      places_par_m2_sdp?: number | null;
-      min_places_par_logement?: number | null;
-      places_visiteur_par_logements?: {
-        logements: number;
-        places: number;
-      } | null;
-    };
-    bureau?: {
-      places_par_m2_sdp?: number | null;
-    };
-    commerce?: {
-      places_par_m2_sdp?: number | null;
-    };
-    commentaires?: string | null;
-  };
-
-  voirie_acces: {
-    largeur_min_acces_m?: number | null;
-    observations?: string | null;
-  };
-
-  divers: {
-    contraintes_patrimoniales?: string | null;
-    contraintes_paysageres?: string | null;
-    autres?: string | null;
-  };
-
-  brut: {
-    articles: {
-      [articleKey: string]: {
-        titre?: string | null;
-        contenu: string;
-      };
-    };
-    notes_generales?: string | null;
-  };
-};
-
-CONSIGNES IMPORTANTES :
-- Tu DOIS renvoyer un JSON strictement valide, sans texte avant ou après.
-- Ne mets PAS de commentaires dans le JSON.
-- Pour les champs numériques, utilise des nombres (ex: 0.4) et pas des chaînes.
-- Si une information n’est pas présente, mets null ou un tableau vide selon le type.
-- Tu peux choisir librement les clés de brut.articles, par exemple "UC1", "Art 1", "Article 1", etc.
-- Ne mets AUCUNE explication en dehors du JSON.
+Tu DOIS renvoyer uniquement un JSON strictement valide, sans texte avant ou après.
+Ne mets PAS de commentaires dans le JSON.
+Pour les champs numériques : utilise des nombres, jamais des chaînes.
+Si une information n'est pas présente, mets null ou tableau vide.
 `;
 
-// Fabrique le user prompt à partir de l'input
 function buildUserPrompt(input: PluExtractInput): string {
   return `
 Commune INSEE : ${input.commune_insee}
 Commune : ${input.commune_nom}
 Zone : ${input.zone_code}
-Source : ${input.source_label ?? "PLU (source inconnue)"}
+Source : ${input.source_label ?? "PLU"}
 
-Texte du règlement de la zone (articles, etc.) :
+Texte du règlement de la zone :
 """
 ${input.zone_text}
 """
 
-Tâche :
-1. Analyse ce texte.
-2. Extrait toutes les informations pertinentes pour remplir un objet PLURulesetV2.
-3. Remplis les champs meta avec les informations ci-dessus.
-4. Place les articles dans brut.articles, avec une clé par article (ex: "UC1", "UC2", "Article 9", etc.).
-5. Retourne UNIQUEMENT le JSON PLURulesetV2.
+Retourne UNIQUEMENT le JSON PLURulesetV2.
 `;
 }
 
-// -------------------------------------------------
-// Heuristiques locales (style plu-extract-article-v1)
-// -------------------------------------------------
+function parsePleineTerreRatio(text: string): { ratio: number | null; note: string | null } {
+  const re1 = /(\d+(?:[.,]\d+)?)\s*%\s*(?:minimum\s+)?(?:de\s+)?[^.\n]{0,150}?pleine\s+terre/gi;
+  const re2 = /pleine\s+terre[^.\n]{0,150}?(\d+(?:[.,]\d+)?)\s*%/gi;
 
-// 1) Emprise max (40% → 0.4)
-function parseEmpriseMaxRatioFromText(text: string): number | null {
-  const regex = /(\d+(?:[.,]\d+)?)\s*%/;
-  const match = text.match(regex);
-  if (!match) return null;
+  const tryMatch = (re: RegExp): { raw: string } | null => {
+    let m: RegExpExecArray | null;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      const raw = (m[1] ?? m[2]) as string;
+      const ctx = m[0];
+      if (/stationnement|parc\s+de\s+stat|vélo|velo|capacité|bicyclette/i.test(ctx)) continue;
+      return { raw };
+    }
+    return null;
+  };
 
-  const raw = match[1].replace(",", ".");
-  const value = Number(raw);
-  if (isNaN(value)) return null;
+  const found = tryMatch(re1) ?? tryMatch(re2);
+  if (!found) return { ratio: null, note: null };
 
-  return value / 100;
+  const value = Number(found.raw.replace(",", "."));
+  if (isNaN(value) || value <= 0 || value > 100) return { ratio: null, note: null };
+
+  return {
+    ratio: value / 100,
+    note: `${value}% de l'unité foncière minimum.`,
+  };
 }
 
-// 2) Hauteur max (en m) – on cible les mentions avec “hauteur”, “à l’égout du toit”, etc.
-function parseHauteurMaxFromText(text: string): number | null {
-  // Cherche un pattern du type "7 mètres" ou "9 m" proche de "hauteur" ou "égout du toit"
-  const regex =
-    /hauteur[^.]{0,80}?(\d+(?:[.,]\d+)?)\s*m(?:è|e)?tres?|(\d+(?:[.,]\d+)?)\s*m(?:è|e)?tres?[^.]{0,80}?égout du toit/gi;
+function parseHauteurs(text: string): {
+  egout: number | null;
+  egout_note: string | null;
+  faitage: number | null;
+  faitage_note: string | null;
+} {
+  let egout: number | null = null;
+  let faitage: number | null = null;
 
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    const numStr = (match[1] ?? match[2])?.toString().replace(",", ".");
-    if (!numStr) continue;
-    const value = Number(numStr);
-    if (!isNaN(value)) return value;
+  for (const re of [
+    /(\d+(?:[.,]\d+)?)\s*m(?:ètres?)?\s*[^.\n]{0,80}?(?:égout|acrotère)/i,
+    /(?:égout|acrotère)[^.\n]{0,80}?(\d+(?:[.,]\d+)?)\s*m/i,
+  ]) {
+    const m = re.exec(text);
+    if (m) {
+      const v = Number((m[1] ?? m[2]).replace(",", "."));
+      if (!isNaN(v) && v > 0 && v < 60) {
+        egout = v;
+        break;
+      }
+    }
   }
 
-  // fallback très simple : premier "nombre m" dans le texte
-  const simple = /(\d+(?:[.,]\d+)?)\s*m(?:è|e)?tres?/i.exec(text);
-  if (simple) {
-    const raw = simple[1].replace(",", ".");
-    const value = Number(raw);
-    if (!isNaN(value)) return value;
+  for (const re of [
+    /(\d+(?:[.,]\d+)?)\s*m(?:ètres?)?\s*[^.\n]{0,80}?faîtage/i,
+    /faîtage[^.\n]{0,80}?(\d+(?:[.,]\d+)?)\s*m/i,
+  ]) {
+    const m = re.exec(text);
+    if (m) {
+      const v = Number((m[1] ?? m[2]).replace(",", "."));
+      if (!isNaN(v) && v > 0 && v < 70) {
+        faitage = v;
+        break;
+      }
+    }
   }
 
-  return null;
+  return {
+    egout,
+    egout_note: egout !== null ? `${egout}m à l'égout/acrotère.` : null,
+    faitage,
+    faitage_note: faitage !== null ? `${faitage}m au faîtage.` : null,
+  };
 }
 
-// 3) Pleine terre (ratio en %) – on cible les phrases contenant "pleine terre" ou "espaces verts"
-function parsePleineTerreRatioFromText(text: string): number | null {
-  const regex =
-    /(\d+(?:[.,]\d+)?)\s*%[^.]{0,80}?(pleine terre|espaces verts|espaces plantés)/i;
-  const match = regex.exec(text);
-  if (!match) return null;
+function parsePlacesParLogement(text: string): { places: number | null; note: string | null } {
+  const re = /(\d+(?:[.,]\d+)?)\s*(?:places?|pl\.?)\s+(?:par|\/)\s+logement/i;
+  const m = re.exec(text);
+  if (!m) return { places: null, note: null };
 
-  const raw = match[1].replace(",", ".");
-  const value = Number(raw);
-  if (isNaN(value)) return null;
+  const v = Number(m[1].replace(",", "."));
+  if (isNaN(v)) return { places: null, note: null };
 
-  return value / 100;
+  return {
+    places: v,
+    note: `Minimum ${v} place(s)/logement.`,
+  };
 }
 
-// 4) Stationnement logements – "X places par logement"
-function parsePlacesParLogementFromText(text: string): number | null {
-  const regex =
-    /(\d+(?:[.,]\d+)?)\s*(?:places?|pl\.)\s+par\s+logement/i;
-  const match = regex.exec(text);
-  if (!match) return null;
-
-  const raw = match[1].replace(",", ".");
-  const value = Number(raw);
-  if (isNaN(value)) return null;
-
-  return value;
-}
-
-// Surcouche : enrichit le ruleset produit par OpenAI avec les heuristiques locales
 function enhanceRulesetWithHeuristics(
-  ruleset: JsonValue,
+  ruleset: Record<string, unknown>,
   zoneText: string,
-): JsonValue {
+): Record<string, unknown> {
   try {
-    const obj = ruleset as any;
-    if (!obj || typeof obj !== "object") return ruleset;
+    const obj = { ...ruleset } as Record<string, unknown>;
 
-    // --------- Sécurise la structure minimale ----------
-    if (!obj.densite_emprise || typeof obj.densite_emprise !== "object") {
-      obj.densite_emprise = {
-        cos_existe: false,
-      };
-    }
-    if (!obj.hauteurs || typeof obj.hauteurs !== "object") {
-      obj.hauteurs = {
-        h_max_egout_m: null,
-        h_max_faitage_m: null,
-        nb_niveaux_max: null,
-        secteurs_overrides: {},
-        regle_prospect: null,
-        commentaires: null,
-      };
-    }
-    if (!obj.pleine_terre || typeof obj.pleine_terre !== "object") {
-      obj.pleine_terre = {
-        ratio_min: null,
-        commentaire: null,
-      };
-    }
-    if (!obj.stationnement || typeof obj.stationnement !== "object") {
-      obj.stationnement = {
-        logement: null,
-        bureau: null,
-        commerce: null,
-        commentaires: null,
-      };
-    }
+    const pleineTerre = (
+      typeof obj.pleine_terre === "object" && obj.pleine_terre !== null
+        ? { ...(obj.pleine_terre as object) }
+        : {}
+    ) as Record<string, unknown>;
 
-    const densite = obj.densite_emprise as any;
-    const hauteurs = obj.hauteurs as any;
-    const pleineTerre = obj.pleine_terre as any;
-    const stationnement = obj.stationnement as any;
+    const hauteurs = (
+      typeof obj.hauteurs === "object" && obj.hauteurs !== null
+        ? { ...(obj.hauteurs as object) }
+        : {}
+    ) as Record<string, unknown>;
 
-    // --------- 1) Emprise au sol (UC9 & cie) ----------
-    if (
-      densite.emprise_max_ratio === null ||
-      typeof densite.emprise_max_ratio === "undefined"
-    ) {
-      const ratio = parseEmpriseMaxRatioFromText(zoneText);
+    const densiteEmprise = (
+      typeof obj.densite_emprise === "object" && obj.densite_emprise !== null
+        ? { ...(obj.densite_emprise as object) }
+        : { cos_existe: false }
+    ) as Record<string, unknown>;
+
+    const stationnement = (
+      typeof obj.stationnement === "object" && obj.stationnement !== null
+        ? { ...(obj.stationnement as object) }
+        : {}
+    ) as Record<string, unknown>;
+
+    const currentPT = typeof pleineTerre.ratio_min === "number" ? pleineTerre.ratio_min : null;
+    const ptSuspect = currentPT !== null && currentPT < 0.10;
+
+    if (currentPT === null || ptSuspect) {
+      const { ratio, note } = parsePleineTerreRatio(zoneText);
       if (ratio !== null) {
-        densite.emprise_max_ratio = ratio;
-
-        const commentaireExist = densite.commentaires ?? "";
-        const ajout =
-          "Valeur d'emprise_max_ratio déduite automatiquement du texte brut (heuristique locale).";
-
-        densite.commentaires = commentaireExist
-          ? `${commentaireExist} ${ajout}`
-          : ajout;
+        pleineTerre.ratio_min = ratio;
+        pleineTerre.ratio_min_note = note;
+        pleineTerre.commentaire = ptSuspect
+          ? "Valeur corrigée par heuristique locale."
+          : "Valeur extraite par heuristique locale.";
       }
     }
 
-    // --------- 2) Hauteurs (UC10 & assimilés) ----------
-    if (
-      hauteurs.h_max_egout_m === null ||
-      typeof hauteurs.h_max_egout_m === "undefined"
-    ) {
-      const h = parseHauteurMaxFromText(zoneText);
-      if (h !== null) {
-        hauteurs.h_max_egout_m = h;
+    const currentEgout = typeof hauteurs.h_max_egout_m === "number" ? hauteurs.h_max_egout_m : null;
+    const currentFaitage = typeof hauteurs.h_max_faitage_m === "number" ? hauteurs.h_max_faitage_m : null;
 
-        const commentaireExist = hauteurs.commentaires ?? "";
-        const ajout =
-          "Hauteur maximale déduite automatiquement du texte brut (heuristique locale).";
-
-        hauteurs.commentaires = commentaireExist
-          ? `${commentaireExist} ${ajout}`
-          : ajout;
+    if (currentEgout === null || currentFaitage === null) {
+      const { egout, egout_note, faitage, faitage_note } = parseHauteurs(zoneText);
+      if (egout !== null && currentEgout === null) {
+        hauteurs.h_max_egout_m = egout;
+        if (!hauteurs.h_max_egout_note) hauteurs.h_max_egout_note = egout_note;
+      }
+      if (faitage !== null && currentFaitage === null) {
+        hauteurs.h_max_faitage_m = faitage;
+        if (!hauteurs.h_max_faitage_note) hauteurs.h_max_faitage_note = faitage_note;
       }
     }
 
-    // --------- 3) Pleine terre (ratio minimal %) ----------
     if (
-      pleineTerre.ratio_min === null ||
-      typeof pleineTerre.ratio_min === "undefined"
+      (densiteEmprise.emprise_max_ratio === null || densiteEmprise.emprise_max_ratio === undefined) &&
+      !densiteEmprise.emprise_max_note
     ) {
-      const ratioPT = parsePleineTerreRatioFromText(zoneText);
-      if (ratioPT !== null) {
-        pleineTerre.ratio_min = ratioPT;
-
-        const commentaireExist = pleineTerre.commentaire ?? "";
-        const ajout =
-          "Ratio de pleine terre déduit automatiquement du texte brut (heuristique locale).";
-
-        pleineTerre.commentaire = commentaireExist
-          ? `${commentaireExist} ${ajout}`
-          : ajout;
-      }
+      densiteEmprise.emprise_max_note = "Pas de règle fixée";
     }
 
-    // --------- 4) Stationnement logement (places / logement) ----------
-    if (stationnement.logement === null) {
-      stationnement.logement = {
-        places_par_logement: null,
-        places_par_m2_sdp: null,
-        min_places_par_logement: null,
-        places_visiteur_par_logements: null,
-      };
+    if (densiteEmprise.cos_existe === false && !densiteEmprise.cos_note) {
+      densiteEmprise.cos_note = "Sans objet";
     }
 
-    if (
-      stationnement.logement.places_par_logement === null ||
-      typeof stationnement.logement.places_par_logement === "undefined"
-    ) {
-      const places = parsePlacesParLogementFromText(zoneText);
+    const logement = (
+      typeof stationnement.logement === "object" && stationnement.logement !== null
+        ? { ...(stationnement.logement as object) }
+        : {}
+    ) as Record<string, unknown>;
+
+    const currentPlaces = typeof logement.places_par_logement === "number"
+      ? logement.places_par_logement
+      : null;
+
+    if (currentPlaces === null) {
+      const { places, note } = parsePlacesParLogement(zoneText);
       if (places !== null) {
-        stationnement.logement.places_par_logement = places;
-
-        const commentaireExist = stationnement.commentaires ?? "";
-        const ajout =
-          "Nombre de places par logement déduit automatiquement du texte brut (heuristique locale).";
-
-        stationnement.commentaires = commentaireExist
-          ? `${commentaireExist} ${ajout}`
-          : ajout;
+        logement.places_par_logement = places;
+        if (!logement.places_par_logement_note) logement.places_par_logement_note = note;
+        stationnement.logement = logement;
       }
     }
+
+    obj.pleine_terre = pleineTerre;
+    obj.hauteurs = hauteurs;
+    obj.densite_emprise = densiteEmprise;
+    obj.stationnement = stationnement;
 
     return obj;
-  } catch (_err) {
-    // En cas de souci, on renvoie le ruleset brut sans planter la fonction
+  } catch (_e) {
+    console.error("[plu-extract-ruleset] heuristic error");
     return ruleset;
   }
 }
 
-// -------------------------------------------------
-// Appel OpenAI Chat Completions
-// -------------------------------------------------
-async function callOpenAIForRuleset(
-  input: PluExtractInput,
-): Promise<JsonValue> {
+async function callOpenAI(input: PluExtractInput): Promise<JsonValue> {
   if (!OPENAI_API_KEY) {
-    throw new Error(
-      "OPENAI_API_KEY est manquant dans les variables d'environnement.",
-    );
+    throw new Error("OPENAI_API_KEY_MISSING");
   }
 
   const body = {
@@ -427,78 +275,70 @@ async function callOpenAIForRuleset(
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: buildUserPrompt(input),
-      },
+      { role: "user", content: buildUserPrompt(input) },
     ],
   };
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error("OpenAI error:", errorText);
-    throw new Error(`Erreur OpenAI : ${response.status} ${errorText}`);
+    throw new Error("OPENAI_CALL_FAILED");
   }
 
   const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
 
-  const content =
-    data.choices?.[0]?.message?.content ??
-    (() => {
-      throw new Error("Réponse OpenAI sans contenu.");
-    })();
+  if (!content) {
+    throw new Error("OPENAI_EMPTY_RESPONSE");
+  }
 
-  // On parse le JSON brut renvoyé par le modèle
   try {
-    const parsed = JSON.parse(content);
-    return parsed as JsonValue;
-  } catch (err) {
-    console.error("Erreur parse JSON OpenAI:", err, "content:", content);
-    throw new Error("Impossible de parser le JSON renvoyé par OpenAI.");
+    return JSON.parse(content) as JsonValue;
+  } catch {
+    throw new Error("OPENAI_JSON_PARSE_FAILED");
   }
 }
 
-// -------------------------------------------------
-// Handler principal
-// -------------------------------------------------
-
 serve(async (req) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", {
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
   if (req.method !== "POST") {
-    const resp: PluExtractResponse = {
-      success: false,
-      version: "plu-extract-ruleset-v1",
-      error: "Méthode non supportée. Utilise POST.",
-    };
-    return new Response(JSON.stringify(resp), {
-      status: 405,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
+    return jsonResponse(
+      {
+        success: false,
+        version: "plu-extract-ruleset-v2.1",
+        error: "METHOD_NOT_ALLOWED",
       },
-    });
+      405,
+    );
   }
 
   try {
-    const body = (await req.json()) as Partial<PluExtractInput>;
+    let body: Partial<PluExtractInput>;
+
+    try {
+      body = (await req.json()) as Partial<PluExtractInput>;
+    } catch (_e) {
+      return jsonResponse(
+        {
+          success: false,
+          version: "plu-extract-ruleset-v2.1",
+          error: "INVALID_JSON_BODY",
+        },
+        400,
+      );
+    }
 
     const {
       commune_insee,
@@ -511,19 +351,14 @@ serve(async (req) => {
     } = body;
 
     if (!commune_insee || !commune_nom || !zone_code || !zone_text) {
-      const resp: PluExtractResponse = {
-        success: false,
-        version: "plu-extract-ruleset-v1",
-        error:
-          "Champs requis manquants : commune_insee, commune_nom, zone_code, zone_text.",
-      };
-      return new Response(JSON.stringify(resp), {
-        status: 400,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
+      return jsonResponse(
+        {
+          success: false,
+          version: "plu-extract-ruleset-v2.1",
+          error: "INVALID_INPUT",
         },
-      });
+        400,
+      );
     }
 
     const input: PluExtractInput = {
@@ -536,19 +371,17 @@ serve(async (req) => {
       save_to_db: save_to_db ?? false,
     };
 
-    // 1) Appel OpenAI → JSON PLURulesetV2
-    const rulesetRaw = await callOpenAIForRuleset(input);
+    const rulesetRaw = await callOpenAI(input);
 
-    // 2) Enrichissement local avec heuristiques (emprise, hauteurs, pleine terre, stationnement)
-    const ruleset = enhanceRulesetWithHeuristics(rulesetRaw, input.zone_text);
+    const ruleset = enhanceRulesetWithHeuristics(
+      rulesetRaw as Record<string, unknown>,
+      input.zone_text,
+    );
 
-    let dbInfo: PluExtractResponse["db"] = {
-      saved: false,
-    };
+    let dbInfo: PluExtractResponse["db"] = { saved: false };
 
-    // 3) Optionnel : enregistrement dans plu_rulesets
     if (input.save_to_db) {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from(PLU_RULESETS_TABLE)
         .insert({
           commune_insee: input.commune_insee,
@@ -561,51 +394,28 @@ serve(async (req) => {
         .select("id")
         .single();
 
-      if (error) {
-        console.error("Erreur insert plu_rulesets:", error);
-        dbInfo = {
-          saved: false,
-          error: error.message,
-          table: PLU_RULESETS_TABLE,
-        };
-      } else {
-        dbInfo = {
-          saved: true,
-          record_id: data.id,
-          table: PLU_RULESETS_TABLE,
-        };
-      }
+      dbInfo = error ? { saved: false } : { saved: true };
     }
 
-    const resp: PluExtractResponse = {
-      success: true,
-      version: "plu-extract-ruleset-v1",
-      inputs: input,
-      ruleset,
-      db: dbInfo,
-    };
+    return jsonResponse(
+      {
+        success: true,
+        version: "plu-extract-ruleset-v2.1",
+        ruleset,
+        db: dbInfo,
+      },
+      200,
+    );
+  } catch (_e) {
+    console.error("[plu-extract-ruleset] internal error");
 
-    return new Response(JSON.stringify(resp), {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
+    return jsonResponse(
+      {
+        success: false,
+        version: "plu-extract-ruleset-v2.1",
+        error: "INTERNAL_ERROR",
       },
-    });
-  } catch (err) {
-    console.error("Erreur plu-extract-ruleset:", err);
-    const resp: PluExtractResponse = {
-      success: false,
-      version: "plu-extract-ruleset-v1",
-      error: "Erreur interne plu-extract-ruleset",
-      details: String(err),
-    };
-    return new Response(JSON.stringify(resp), {
-      status: 500,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    });
+      500,
+    );
   }
 });

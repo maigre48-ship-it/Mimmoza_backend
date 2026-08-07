@@ -10,11 +10,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-console.log("✅ cadastre-lite – function loaded");
-
-// -----------------------------
-// Types
-// -----------------------------
 type CadastreLiteRequest = {
   mode: "point";
   lat: number;
@@ -23,11 +18,9 @@ type CadastreLiteRequest = {
 };
 
 type EtalabCommune = {
-  // code INSEE normalisé (ex : 75056 pour Paris)
   code: string;
   codeDepartement: string;
   nom: string;
-  // code utilisé par le cadastre Etalab (ex : 75107 pour Paris 7e)
   codeCadastre?: string;
 };
 
@@ -38,7 +31,7 @@ type EtalabParcel = {
   section: string | null;
   numero: string | null;
   surface_m2: number | null;
-  geometry: any; // GeoJSON geometry
+  geometry: any;
 };
 
 type DownloadResult =
@@ -46,65 +39,52 @@ type DownloadResult =
       success: true;
       level: "commune" | "departement";
       geojson: any;
-      url: string;
       statusCommune?: number;
       statusDepartement?: number;
     }
   | {
       success: false;
       error: "NO_GEOJSON";
-      urlCommune: string;
-      urlDepartement: string;
       statusCommune?: number;
       statusDepartement?: number;
     };
 
-// -----------------------------
-// HTTP server
-// -----------------------------
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const body = (await req.json()) as CadastreLiteRequest;
+    const body = (await req.json().catch(() => null)) as CadastreLiteRequest | null;
+
+    if (!body) {
+      return jsonResponse({ success: false, error: "INVALID_JSON" }, 400);
+    }
 
     if (body.mode === "point") {
       return await handlePoint(body);
     }
 
     return jsonResponse({ success: false, error: "INVALID_MODE" }, 400);
-  } catch (err) {
-    console.error("❌ cadastre-lite global error:", err);
-    return jsonResponse(
-      { success: false, error: "INTERNAL_ERROR", details: String(err) },
-      500,
-    );
+  } catch {
+    console.error("[cadastre-lite] Internal error");
+    return jsonResponse({ success: false, error: "INTERNAL_ERROR" }, 500);
   }
 });
 
-// =================================================
-// Handler : MODE POINT
-// =================================================
 async function handlePoint(body: CadastreLiteRequest): Promise<Response> {
   const { lat, lon, include_plu = false } = body;
 
-  console.log("📍 handlePoint:", { lat, lon, include_plu });
-
-  // 1) Commune via geo.api.gouv.fr (avec normalisation Paris)
-  const commune = await getCommuneFromLatLon(lat, lon);
-  if (!commune) {
-    return jsonResponse(
-      { success: false, error: "NO_COMMUNE_FOUND" },
-      404,
-    );
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return jsonResponse({ success: false, error: "INVALID_COORDINATES" }, 400);
   }
 
-  console.log("🌍 handlePoint – commune:", commune);
+  const commune = await getCommuneFromLatLon(lat, lon);
 
-  // 2) Parcelles via Etalab (GeoJSON.gz)
-  //    👉 On utilise le code cadastre (arrondissement pour Paris), sinon le code normalisé
+  if (!commune) {
+    return jsonResponse({ success: false, error: "NO_COMMUNE_FOUND" }, 404);
+  }
+
   const codeForCadastre = commune.codeCadastre ?? commune.code;
 
   const download = await downloadParcellesGeoJSONWithFallback(
@@ -113,39 +93,41 @@ async function handlePoint(body: CadastreLiteRequest): Promise<Response> {
   );
 
   if (!download.success) {
-    console.error("❌ NO_GEOJSON details:", download);
+    console.error("[cadastre-lite] GeoJSON unavailable");
+
     return jsonResponse(
       {
         success: false,
         error: "NO_GEOJSON",
-        commune,
-        debug: download,
       },
       500,
     );
   }
 
   const geojson = download.geojson;
-  console.log(
-    `✅ GeoJSON chargé (${download.level}) depuis ${download.url} avec ${
-      geojson.features.length
-    } features`,
-  );
 
-  // 3) Choisir la parcelle la plus proche du point
   const parcel = pickNearestParcel(geojson, lat, lon, commune);
+
   if (!parcel) {
     return jsonResponse(
-      { success: false, error: "NO_PARCEL_FOUND", commune },
+      {
+        success: false,
+        error: "NO_PARCEL_FOUND",
+        commune: {
+          code: commune.code,
+          codeDepartement: commune.codeDepartement,
+          nom: commune.nom,
+          codeCadastre: commune.codeCadastre,
+        },
+      },
       404,
     );
   }
 
-  // 4) Upsert dans le cache
   const cached = await upsertParcelIntoCache(parcel);
 
-  // 5) PLU (optionnel)
   let plu: any = null;
+
   if (include_plu && cached && cached.id) {
     plu = await fetchPluForParcel(cached.id as string);
   }
@@ -153,15 +135,17 @@ async function handlePoint(body: CadastreLiteRequest): Promise<Response> {
   return jsonResponse({
     success: true,
     source: "etalab",
-    commune,
+    commune: {
+      code: commune.code,
+      codeDepartement: commune.codeDepartement,
+      nom: commune.nom,
+      codeCadastre: commune.codeCadastre,
+    },
     parcel: cached,
     plu,
   });
 }
 
-// =================================================
-// JSON helper
-// =================================================
 function jsonResponse(body: any, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -172,17 +156,6 @@ function jsonResponse(body: any, status = 200): Response {
   });
 }
 
-// =================================================
-// Etalab helpers – commune via geo.api.gouv.fr
-// =================================================
-
-/**
- * Recherche la commune correspondante à un point (lat, lon)
- * via l'API publique geo.api.gouv.fr
- *
- * - code         → INSEE normalisé (ex: 75056 pour Paris)
- * - codeCadastre → INSEE brut Etalab (ex: 75107 pour Paris 7e)
- */
 async function getCommuneFromLatLon(
   lat: number,
   lon: number,
@@ -190,68 +163,46 @@ async function getCommuneFromLatLon(
   const url =
     `https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lon}&format=json`;
 
-  console.log("🌍 getCommuneFromLatLon URL:", url);
-
   try {
     const res = await fetch(url);
-    console.log("🌍 getCommuneFromLatLon status:", res.status);
 
     if (!res.ok) {
-      console.error("❌ getCommuneFromLatLon HTTP error:", res.status);
+      console.error("[cadastre-lite] Commune lookup HTTP error");
       return null;
     }
 
-    const json = await res.json();
-    console.log("🌍 getCommuneFromLatLon raw json:", json);
+    const json = await res.json().catch(() => null);
 
     if (!Array.isArray(json) || json.length === 0) {
-      console.warn("⚠️ getCommuneFromLatLon: aucune commune trouvée (array vide)");
       return null;
     }
 
     const c = json[0];
-    console.log("🌍 getCommuneFromLatLon first item:", c);
 
     if (!c.code || !c.codeDepartement) {
-      console.warn(
-        "⚠️ getCommuneFromLatLon: réponse incomplète (pas de code ou codeDepartement)",
-        c,
-      );
       return null;
     }
 
     const rawCode = c.code as string;
     const depCode = c.codeDepartement as string;
 
-    // 🔧 Normalisation spéciale Paris : arrondissements 75101–75120 → 75056
     let normalizedCode = rawCode;
+
     if (depCode === "75" && rawCode.startsWith("751")) {
-      console.log(
-        "ℹ️ Normalisation Paris : arrondissement",
-        rawCode,
-        "→ 75056",
-      );
       normalizedCode = "75056";
     }
 
-    const commune: EtalabCommune = {
-      code: normalizedCode, // code INSEE normalisé pour Mimmoza / PLU / DVF
+    return {
+      code: normalizedCode,
       codeDepartement: depCode,
       nom: c.nom ?? "",
-      codeCadastre: rawCode, // code utilisé par le cadastre (arrondissement)
+      codeCadastre: rawCode,
     };
-
-    console.log("✅ Commune trouvée (normalisée + cadastre):", commune);
-    return commune;
-  } catch (e) {
-    console.error("❌ Exception getCommuneFromLatLon:", e);
+  } catch {
+    console.error("[cadastre-lite] Commune lookup error");
     return null;
   }
 }
-
-// =================================================
-// Etalab helpers – parcelles GeoJSON (commune + fallback département)
-// =================================================
 
 async function downloadParcellesGeoJSONWithFallback(
   codeCommune: string,
@@ -270,13 +221,8 @@ async function downloadParcellesGeoJSONWithFallback(
   let statusDepartement: number | undefined;
 
   try {
-    console.log("🌍 Tentative commune Etalab:", urlCommune);
     const resCommune = await fetch(urlCommune);
     statusCommune = resCommune.status;
-    console.log(
-      "🌍 downloadParcellesGeoJSON commune status:",
-      statusCommune,
-    );
 
     if (resCommune.ok && resCommune.body) {
       const ds = new DecompressionStream("gzip");
@@ -284,32 +230,27 @@ async function downloadParcellesGeoJSONWithFallback(
       const text = await new Response(decompressedStream).text();
 
       const geojson = JSON.parse(text);
+
       if (
-        geojson && geojson.type === "FeatureCollection" &&
+        geojson &&
+        geojson.type === "FeatureCollection" &&
         Array.isArray(geojson.features)
       ) {
         return {
           success: true,
           level: "commune",
           geojson,
-          url: urlCommune,
           statusCommune,
         };
       }
     }
-  } catch (e) {
-    console.error("❌ Erreur commune Etalab:", e);
+  } catch {
+    console.error("[cadastre-lite] Commune GeoJSON loading error");
   }
 
-  // Fallback département
   try {
-    console.log("🌍 Tentative département Etalab:", urlDepartement);
     const resDep = await fetch(urlDepartement);
     statusDepartement = resDep.status;
-    console.log(
-      "🌍 downloadParcellesGeoJSON département status:",
-      statusDepartement,
-    );
 
     if (resDep.ok && resDep.body) {
       const ds = new DecompressionStream("gzip");
@@ -317,29 +258,28 @@ async function downloadParcellesGeoJSONWithFallback(
       const text = await new Response(decompressedStream).text();
 
       const geojson = JSON.parse(text);
+
       if (
-        geojson && geojson.type === "FeatureCollection" &&
+        geojson &&
+        geojson.type === "FeatureCollection" &&
         Array.isArray(geojson.features)
       ) {
         return {
           success: true,
           level: "departement",
           geojson,
-          url: urlDepartement,
           statusCommune,
           statusDepartement,
         };
       }
     }
-  } catch (e) {
-    console.error("❌ Erreur département Etalab:", e);
+  } catch {
+    console.error("[cadastre-lite] Departement GeoJSON loading error");
   }
 
   return {
     success: false,
     error: "NO_GEOJSON",
-    urlCommune,
-    urlDepartement,
     statusCommune,
     statusDepartement,
   };
@@ -350,6 +290,7 @@ function approxCentroid(geometry: any): [number, number] | null {
 
   const type = geometry.type;
   const coords = geometry.coordinates;
+
   if (!coords) return null;
 
   let sumX = 0;
@@ -379,6 +320,7 @@ function approxCentroid(geometry: any): [number, number] | null {
   }
 
   if (count === 0) return null;
+
   return [sumX / count, sumY / count];
 }
 
@@ -393,7 +335,9 @@ function pickNearestParcel(
 
   for (const f of geojson.features) {
     if (!f || !f.geometry) continue;
+
     const centroid = approxCentroid(f.geometry);
+
     if (!centroid) continue;
 
     const cx = centroid[0];
@@ -409,9 +353,6 @@ function pickNearestParcel(
   }
 
   if (!bestFeature) {
-    console.warn(
-      "⚠️ pickNearestParcel: aucune parcelle trouvée proche du point",
-    );
     return null;
   }
 
@@ -442,26 +383,19 @@ function pickNearestParcel(
       : Number(props.surface)) ||
     null;
 
-  const parcel: EtalabParcel = {
+  return {
     id,
-    code_commune: commune.code, // on garde le code normalisé pour Mimmoza
+    code_commune: commune.code,
     nom_commune: commune.nom,
     section,
     numero,
     surface_m2: surface,
     geometry: bestFeature.geometry,
   };
-
-  console.log("✅ Parcelle choisie (Etalab):", parcel.id);
-  return parcel;
 }
 
-// =================================================
-// Cache : upsert dans cadastre_parcelles_cache
-// =================================================
 async function upsertParcelIntoCache(parcel: EtalabParcel): Promise<any> {
   if (!parcel.id) {
-    console.warn("⚠️ parcel sans id → pas d'upsert cache");
     return parcel;
   }
 
@@ -479,16 +413,13 @@ async function upsertParcelIntoCache(parcel: EtalabParcel): Promise<any> {
   );
 
   if (error) {
-    console.error("❌ upsertParcelIntoCache error:", error);
-    return parcel; // fallback
+    console.error("[cadastre-lite] Cache upsert error");
+    return parcel;
   }
 
   return data;
 }
 
-// =================================================
-// PLU : appel du RPC plu_get_for_parcelle
-// =================================================
 async function fetchPluForParcel(
   parcelId: string,
 ): Promise<any | null> {
@@ -499,13 +430,13 @@ async function fetchPluForParcel(
     );
 
     if (error) {
-      console.error("❌ fetchPluForParcel error:", error);
+      console.error("[cadastre-lite] PLU lookup error");
       return null;
     }
 
     return data;
-  } catch (err) {
-    console.error("❌ fetchPluForParcel exception:", err);
+  } catch {
+    console.error("[cadastre-lite] PLU lookup exception");
     return null;
   }
 }

@@ -7,14 +7,13 @@ import { corsHeaders } from "../_shared/cors.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get(
-  "SUPABASE_SERVICE_ROLE_KEY"
+  "SUPABASE_SERVICE_ROLE_KEY",
 )!;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-// Petit utilitaire JSON + CORS
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -23,7 +22,6 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 serve(async (req: Request) => {
-  // Preflight CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -34,17 +32,23 @@ serve(async (req: Request) => {
     }
 
     const body = await req.json().catch(() => null);
+
     if (!body || !body.parcel_id) {
       return jsonResponse(
         { success: false, error: "Missing field: parcel_id" },
-        400
+        400,
       );
     }
 
-    const parcel_id = body.parcel_id;
+    const parcel_id = String(body.parcel_id).trim();
 
-    // 1️⃣ Rechercher la parcelle dans ta table cadastre_parcelles
-    // On vérifie que id == parcel_id
+    if (!parcel_id) {
+      return jsonResponse(
+        { success: false, error: "Missing field: parcel_id" },
+        400,
+      );
+    }
+
     const { data, error } = await supabase
       .from("cadastre_parcelles")
       .select("id, props, geom")
@@ -52,21 +56,21 @@ serve(async (req: Request) => {
       .maybeSingle();
 
     if (error) {
-      console.error("Erreur DB:", error);
+      console.error("[parcelle-from-id] Database error");
+
       return jsonResponse(
-        { success: false, error: "Database error", details: error.message },
-        500
+        { success: false, error: "Database error" },
+        500,
       );
     }
 
     if (!data) {
       return jsonResponse(
         { success: false, error: "Parcel not found" },
-        404
+        404,
       );
     }
 
-    // 2️⃣ Extraire surface depuis props.contenance
     const surface =
       data.props?.contenance !== undefined
         ? Number(data.props.contenance)
@@ -74,7 +78,7 @@ serve(async (req: Request) => {
 
     const parcel = {
       parcel_id: data.id,
-      surface_terrain_m2: surface,
+      surface_terrain_m2: Number.isFinite(surface) ? surface : null,
       geometry: data.geom ?? null,
     };
 
@@ -83,17 +87,17 @@ serve(async (req: Request) => {
         success: true,
         parcel,
       },
-      200
+      200,
     );
-  } catch (err) {
-    console.error("Unexpected error:", err);
+  } catch {
+    console.error("[parcelle-from-id] Unexpected error");
+
     return jsonResponse(
       {
         success: false,
         error: "Unexpected error",
-        details: err instanceof Error ? err.message : String(err),
       },
-      500
+      500,
     );
   }
 });

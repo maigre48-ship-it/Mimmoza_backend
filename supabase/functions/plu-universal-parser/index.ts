@@ -1,20 +1,37 @@
 // supabase/functions/plu-universal-parser/index.ts
+// Version : plu-universal-parser-v2.1 — security hardening
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? null;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
 
-// ---------------------------------------------------------
-// Helper : appel LLM OpenAI
-// ---------------------------------------------------------
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+type ParserMode = "auto" | "manual";
+
+type RequestBody = {
+  commune_insee?: string;
+  commune_nom?: string;
+  zone_code?: string;
+  source_id?: string;
+  mode?: ParserMode;
+  extracted_json?: Record<string, unknown>;
+  plu_source_url?: string | null;
+};
+
 async function callLLM(
   texteReglement: string,
   meta: {
@@ -24,9 +41,7 @@ async function callLLM(
   },
 ) {
   if (!OPENAI_API_KEY) {
-    throw new Error(
-      "OPENAI_API_KEY non défini dans les variables d'environnement",
-    );
+    throw new Error("OPENAI_API_KEY_MISSING");
   }
 
   const { commune_insee, commune_nom, zone_code } = meta;
@@ -53,12 +68,11 @@ Tu dois produire un JSON STRICTEMENT au format suivant :
 Règles :
 - Utilise un pourcentage sous forme de décimal (0.6 = 60%).
 - Si une info n'est pas dans le texte, mets null ou cos_existe=false.
-- S'il y a plusieurs hauteurs possibles (par exemple : une règle générale et des cas particuliers ou dérogations),
-  mets dans "hauteur_max_m" la HAUTEUR GÉNÉRALE applicable à la majorité des cas,
-  et décris les cas particuliers (ex : angle de rue, linéaire spécifique, équipements publics) uniquement dans le commentaire.
-- De même, pour "emprise_sol_max", mets la règle générale (par exemple 0.6 pour 60%)
-  et décris les dérogations (par exemple 0.7 pour certains équipements) dans le commentaire sans modifier la valeur générale.
-- "articles_source" doit contenir les articles que tu as réellement utilisés (ex : "UG.6", "UG.7").
+- S'il y a plusieurs hauteurs possibles, mets dans "hauteur_max_m" la hauteur générale applicable à la majorité des cas.
+- Décris les cas particuliers uniquement dans le commentaire.
+- Pour "emprise_sol_max", mets la règle générale.
+- Décris les dérogations dans le commentaire sans modifier la valeur générale.
+- "articles_source" doit contenir les articles réellement utilisés.
 - Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.
 `;
 
@@ -73,7 +87,7 @@ ${texteReglement}
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -87,85 +101,101 @@ ${texteReglement}
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Erreur OpenAI: ${response.status} - ${text}`);
+    throw new Error("OPENAI_CALL_FAILED");
   }
 
   const data = await response.json();
-  const content = data.choices[0].message.content;
+  const content = data?.choices?.[0]?.message?.content;
+
+  if (!content || typeof content !== "string") {
+    throw new Error("OPENAI_EMPTY_RESPONSE");
+  }
 
   try {
     return JSON.parse(content);
-  } catch (e) {
-    console.error("Réponse LLM non JSON : ", content);
-    throw new Error("Réponse non parseable : " + content);
+  } catch (_e) {
+    console.error("[plu-universal-parser] llm json parse failed");
+    throw new Error("OPENAI_JSON_PARSE_FAILED");
   }
 }
 
-// ---------------------------------------------------------
-// Handler principal
-// ---------------------------------------------------------
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  if (req.method !== "POST") {
+    return jsonResponse({ success: false, error: "METHOD_NOT_ALLOWED" }, 405);
+  }
+
+  if (!SUPABASE_URL || !SERVICE_ROLE) {
+    console.error("[plu-universal-parser] missing environment configuration");
+    return jsonResponse({ success: false, error: "MISSING_ENV" }, 500);
+  }
+
   try {
-    const body = await req.json();
-    const {
-      commune_insee,
-      commune_nom,
-      zone_code,
-      source_id,
-      mode = "auto",      // "auto" (LLM) ou "manual" (JSON fourni)
-      extracted_json,     // utilisé en mode "manual"
-      plu_source_url,     // 🔹 URL du PDF / page PLU d'origine (optionnel)
-    } = body;
+    const body = (await req.json().catch(() => null)) as RequestBody | null;
+
+    if (!body) {
+      return jsonResponse({ success: false, error: "INVALID_JSON_BODY" }, 400);
+    }
+
+    const commune_insee =
+      typeof body.commune_insee === "string" ? body.commune_insee.trim() : "";
+
+    const commune_nom =
+      typeof body.commune_nom === "string" ? body.commune_nom.trim() : "";
+
+    const zone_code =
+      typeof body.zone_code === "string" ? body.zone_code.trim().toUpperCase() : "";
+
+    const source_id =
+      typeof body.source_id === "string" ? body.source_id.trim() : "";
+
+    const mode: ParserMode = body.mode === "manual" ? "manual" : "auto";
+
+    const extracted_json =
+      body.extracted_json && typeof body.extracted_json === "object"
+        ? body.extracted_json
+        : null;
+
+    const plu_source_url =
+      typeof body.plu_source_url === "string" && body.plu_source_url.trim()
+        ? body.plu_source_url.trim()
+        : null;
 
     if (!commune_insee || !commune_nom || !zone_code || !source_id) {
-      throw new Error(
-        "Paramètres manquants (commune_insee, commune_nom, zone_code, source_id)",
-      );
+      return jsonResponse({ success: false, error: "INVALID_INPUT" }, 400);
     }
 
     let jsonResult: any;
 
-    // -----------------------------------------------------
-    // MODE MANUAL : on reçoit déjà le JSON normalisé
-    // -----------------------------------------------------
     if (mode === "manual") {
       if (!extracted_json) {
-        throw new Error(
-          "En mode 'manual', le champ 'extracted_json' est obligatoire.",
-        );
+        return jsonResponse({ success: false, error: "INVALID_INPUT" }, 400);
       }
 
-      // On s'assure que les champs clés sont présents
       jsonResult = {
         ...extracted_json,
-        commune_insee: extracted_json.commune_insee ?? commune_insee,
-        commune_nom: extracted_json.commune_nom ?? commune_nom,
-        zone_code: extracted_json.zone_code ?? zone_code,
+        commune_insee: (extracted_json as any).commune_insee ?? commune_insee,
+        commune_nom: (extracted_json as any).commune_nom ?? commune_nom,
+        zone_code: (extracted_json as any).zone_code ?? zone_code,
       };
     } else {
-      // ---------------------------------------------------
-      // MODE AUTO : on lit les chunks + appel LLM
-      // ---------------------------------------------------
       const { data: chunks, error: chunksError } = await supabase
         .from("plu_text_chunks")
         .select("page_number, section_label, raw_text, zone_code")
         .eq("source_id", source_id)
-        // on prend soit les chunks avec zone_code = zone_code,
-        // soit les chunks où zone_code est NULL (pour compat v1)
         .or(`zone_code.is.null,zone_code.eq.${zone_code}`)
         .order("page_number", { ascending: true });
 
       if (chunksError) {
-        throw chunksError;
+        console.error("[plu-universal-parser] chunks query error");
+        return jsonResponse({ success: false, error: "CHUNKS_QUERY_FAILED" }, 500);
       }
 
       if (!chunks || chunks.length === 0) {
-        throw new Error("Aucun chunk trouvé pour cette source / zone.");
+        return jsonResponse({ success: false, error: "NO_CHUNKS_FOUND" }, 404);
       }
 
       const texteReglement = chunks
@@ -181,7 +211,6 @@ serve(async (req) => {
         zone_code,
       });
 
-      // On s'assure aussi ici que les champs clés sont bien renseignés
       jsonResult = {
         ...llmJson,
         commune_insee: llmJson.commune_insee ?? commune_insee,
@@ -190,9 +219,6 @@ serve(async (req) => {
       };
     }
 
-    // -----------------------------------------------------
-    // 3) Sauvegarde brut
-    // -----------------------------------------------------
     const { data: rawRow, error: rawErr } = await supabase
       .from("plu_rules_raw")
       .insert({
@@ -203,16 +229,14 @@ serve(async (req) => {
         source_id,
         extracted_json: jsonResult,
       })
-      .select()
+      .select("id")
       .single();
 
     if (rawErr) {
-      throw rawErr;
+      console.error("[plu-universal-parser] raw insert error");
+      return jsonResponse({ success: false, error: "RAW_INSERT_FAILED" }, 500);
     }
 
-    // -----------------------------------------------------
-    // 4) Normalisation vers plu_rulesets (UPSERT)
-// -----------------------------------------------------
     const d: any = jsonResult;
 
     const rulesetPayload = {
@@ -225,26 +249,19 @@ serve(async (req) => {
         mode === "manual"
           ? "universal_parser_manual"
           : "universal_parser_auto",
-
-      // on garde la source d'origine (PDF / page web du PLU)
-      plu_source_url: plu_source_url ?? null,
-
+      plu_source_url,
       cos_existe: d.densite?.cos_existe ?? false,
       cos_max: d.densite?.cos_max ?? null,
       max_sdp_m2_par_m2_terrain:
         d.densite?.max_sdp_m2_par_m2_terrain ?? null,
-
       hauteur_max_m: d.hauteur?.hauteur_max_m ?? null,
       hauteur_min_m: d.hauteur?.hauteur_min_m ?? null,
       hauteur_commentaire: d.hauteur?.commentaire ?? null,
-
       emprise_sol_max: d.emprise_sol?.emprise_sol_max ?? null,
       emprise_commentaire: d.emprise_sol?.commentaire ?? null,
-
       reculs_commentaire: d.reculs_alignements?.commentaire ?? null,
       stationnement_commentaire: d.stationnement?.commentaire ?? null,
       autres_commentaires: d.autres_regles?.commentaire ?? null,
-
       raw_rules: jsonResult,
     };
 
@@ -253,34 +270,26 @@ serve(async (req) => {
       .upsert(rulesetPayload, {
         onConflict: "commune_insee,zone_code",
       })
-      .select()
+      .select("id")
       .single();
 
     if (rulesetErr) {
-      throw rulesetErr;
+      console.error("[plu-universal-parser] ruleset upsert error");
+      return jsonResponse({ success: false, error: "RULESET_UPSERT_FAILED" }, 500);
     }
 
-    return new Response(
-      JSON.stringify({
+    return jsonResponse(
+      {
         success: true,
-        version: "plu-universal-parser-v2",
-        raw_id: rawRow.id,
+        version: "plu-universal-parser-v2.1",
+        raw_id: rawRow?.id ?? null,
         mode,
         ruleset_id: rulesetRow?.id ?? null,
-      }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
       },
+      200,
     );
-  } catch (e) {
-    console.error(e);
-    return new Response(
-      JSON.stringify({ success: false, error: String(e) }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
-    );
+  } catch (_e) {
+    console.error("[plu-universal-parser] internal error");
+    return jsonResponse({ success: false, error: "INTERNAL_ERROR" }, 500);
   }
 });

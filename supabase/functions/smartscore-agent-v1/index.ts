@@ -1,12 +1,9 @@
 // supabase/functions/smartscore-agent-v1/index.ts
 import { corsHeaders } from "../_shared/cors.ts";
 
-console.log("✅ smartscore-agent-v1 – function loaded");
-
 async function handlePost(req: Request): Promise<Response> {
   try {
     const body = await req.json().catch(() => null);
-    console.log("📥 smartscore-agent-v1 – body reçu:", body);
 
     const mode =
       body && typeof body.mode === "string" ? body.mode : "standard";
@@ -20,7 +17,7 @@ async function handlePost(req: Request): Promise<Response> {
         marche_liquidite: 70,
         qualite_bien: 75,
         rentabilite_prix: 60,
-        risques_complexite: 40, // on met un score pour éviter le 0/100 vide
+        risques_complexite: 40,
       },
       usedCriteriaCount: 15,
       activePillars: [
@@ -59,9 +56,6 @@ async function handlePost(req: Request): Promise<Response> {
             "En optimisant le financement (apport, durée, taux) et la stratégie locative, le cashflow peut être rapproché de l’équilibre, voire légèrement positif dans un contexte de taux maîtrisés et de bonne demande locative.",
         },
       },
-      debug: {
-        receivedBody: body,
-      },
     };
 
     return new Response(JSON.stringify(result), {
@@ -71,16 +65,13 @@ async function handlePost(req: Request): Promise<Response> {
         ...corsHeaders,
       },
     });
-  } catch (err) {
-    console.error("❌ smartscore-agent-v1 – erreur:", err);
+  } catch (_err) {
+    console.error("[smartscore-agent-v1] internal error");
 
     return new Response(
       JSON.stringify({
         success: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : "Erreur interne smartscore-agent-v1",
+        error: "INTERNAL_ERROR",
       }),
       {
         status: 500,
@@ -95,11 +86,9 @@ async function handlePost(req: Request): Promise<Response> {
 
 Deno.serve((req: Request) => {
   const { method } = req;
-  console.log(`➡️ smartscore-agent-v1 – requête ${method}`);
 
   // Preflight CORS
   if (method === "OPTIONS") {
-    console.log("ℹ️ smartscore-agent-v1 – preflight OPTIONS");
     return new Response("ok", {
       status: 200,
       headers: {
@@ -113,7 +102,7 @@ Deno.serve((req: Request) => {
   }
 
   return new Response(
-    JSON.stringify({ error: "Method not allowed" }),
+    JSON.stringify({ error: "METHOD_NOT_ALLOWED" }),
     {
       status: 405,
       headers: {

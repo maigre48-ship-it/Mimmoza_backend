@@ -4,10 +4,6 @@
 // Objectif :
 //  - Entrée : { commune_insee, zone_code }
 //  - Sortie : extrait les règles principales depuis plu_rulesets.rules (PLURulesetV2)
-//
-// Dépendances :
-//  - @supabase/supabase-js v2
-//  - ../_shared/cors.ts
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -46,97 +42,99 @@ type GetRulesResponse = {
     stationnement?: JsonValue;
     autres?: JsonValue;
   };
-  ruleset_raw?: JsonValue;
   error?: string;
-  details?: unknown;
 };
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
 serve(async (req) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", {
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    });
+    return jsonResponse({ ok: true }, 200);
   }
 
   if (req.method !== "POST") {
-    const resp: GetRulesResponse = {
-      success: false,
-      version: "plu-get-rules-for-zone-v1",
-      error: "Méthode non supportée. Utilise POST.",
-    };
-    return new Response(JSON.stringify(resp), {
-      status: 405,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
+    return jsonResponse(
+      {
+        success: false,
+        version: "plu-get-rules-for-zone-v1",
+        error: "METHOD_NOT_ALLOWED",
       },
-    });
+      405,
+    );
   }
 
   try {
-    const body = (await req.json()) as Partial<GetRulesInput>;
-    const { commune_insee, zone_code } = body;
+    const body = (await req.json().catch(() => null)) as Partial<GetRulesInput> | null;
 
-    if (!commune_insee || !zone_code) {
-      const resp: GetRulesResponse = {
-        success: false,
-        version: "plu-get-rules-for-zone-v1",
-        error: "Champs requis manquants : commune_insee, zone_code.",
-      };
-      return new Response(JSON.stringify(resp), {
-        status: 400,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
+    if (!body) {
+      return jsonResponse(
+        {
+          success: false,
+          version: "plu-get-rules-for-zone-v1",
+          error: "INVALID_JSON",
         },
-      });
+        400,
+      );
     }
 
-    // Lecture du ruleset le plus récent pour cette commune / zone
+    const commune_insee = typeof body.commune_insee === "string"
+      ? body.commune_insee.trim()
+      : "";
+
+    const zone_code = typeof body.zone_code === "string"
+      ? body.zone_code.trim()
+      : "";
+
+    if (!commune_insee || !zone_code) {
+      return jsonResponse(
+        {
+          success: false,
+          version: "plu-get-rules-for-zone-v1",
+          error: "MISSING_REQUIRED_FIELDS",
+        },
+        400,
+      );
+    }
+
     const { data, error } = await supabase
       .from(PLU_RULESETS_TABLE)
       .select("id, rules")
       .eq("commune_insee", commune_insee)
       .eq("zone_code", zone_code)
-      .order("id", { ascending: false }) // on prend le plus récent selon l'id
+      .order("id", { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (error) {
-      console.error("Erreur select plu_rulesets:", error);
-      const resp: GetRulesResponse = {
-        success: false,
-        version: "plu-get-rules-for-zone-v1",
-        error: "Erreur lors de la lecture de plu_rulesets.",
-        details: error.message,
-      };
-      return new Response(JSON.stringify(resp), {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
+      console.error("[plu-get-rules-for-zone] Database error");
+
+      return jsonResponse(
+        {
+          success: false,
+          version: "plu-get-rules-for-zone-v1",
+          error: "DB_ERROR",
         },
-      });
+        500,
+      );
     }
 
     if (!data || !data.rules) {
-      const resp: GetRulesResponse = {
-        success: false,
-        version: "plu-get-rules-for-zone-v1",
-        error:
-          "Aucun ruleset trouvé pour cette commune / zone. As-tu bien lancé plu-extract-ruleset avec save_to_db = true ?",
-      };
-      return new Response(JSON.stringify(resp), {
-        status: 404,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
+      return jsonResponse(
+        {
+          success: false,
+          version: "plu-get-rules-for-zone-v1",
+          error: "RULESET_NOT_FOUND",
         },
-      });
+        404,
+      );
     }
 
     const ruleset = data.rules as any;
@@ -159,30 +157,19 @@ serve(async (req) => {
           divers: ruleset.divers ?? null,
         },
       },
-      ruleset_raw: ruleset,
     };
 
-    return new Response(JSON.stringify(resp), {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
+    return jsonResponse(resp, 200);
+  } catch {
+    console.error("[plu-get-rules-for-zone] Internal error");
+
+    return jsonResponse(
+      {
+        success: false,
+        version: "plu-get-rules-for-zone-v1",
+        error: "INTERNAL_ERROR",
       },
-    });
-  } catch (err) {
-    console.error("Erreur plu-get-rules-for-zone:", err);
-    const resp: GetRulesResponse = {
-      success: false,
-      version: "plu-get-rules-for-zone-v1",
-      error: "Erreur interne plu-get-rules-for-zone",
-      details: String(err),
-    };
-    return new Response(JSON.stringify(resp), {
-      status: 500,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    });
+      500,
+    );
   }
 });
