@@ -18,6 +18,17 @@
 //   ne couvrait pas ce cas : la source répondait, mais à une autre question.
 // - `cavites.type` lisait `type_cavite`/`origine`, inexistants : toutes les
 //   cavités étaient « Inconnue ». Le champ réel est `type`.
+// - Deux endpoints n'existaient pas du tout, et échouaient donc silencieusement
+//   sur TOUTES les communes depuis l'origine :
+//     • `/sis` → la ressource est `/ssp`, dont la réponse est un objet à quatre
+//       sections ; les Secteurs d'Information sur les Sols au sens réglementaire
+//       sont dans `conclusions_sis`, pas à la racine.
+//     • `/argiles` → la ressource est `/rga`, et sa réponse est un objet plat
+//       `{ codeExposition, exposition }`, pas une enveloppe `{ data: [...] }`.
+//   Ici le garde-fou de nullabilité a bien fonctionné : rien de faux n'a été
+//   affirmé, les deux critères étaient déclarés « non mesuré ». Mais ils ne
+//   l'étaient pas faute de donnée publique — seulement faute d'appel correct.
+//   Une source déclarée muette mérite d'être vérifiée avant d'être acceptée.
 // MARQUEUR DE VERSION : présence de `georisquesUrl`
 //
 // CHANGEMENTS v1.1.1 — le trou laissé par v1.1.0 :
@@ -658,19 +669,36 @@ async function fetchSis(lat: number, lon: number, codeInsee: string): Promise<Si
   const aucun: SisData = { count: 0, sites: [], risk_level: 'nul', coverage: 'ok' };
 
   try {
-    const url = `${GEORISQUES_API}/sis?code_insee=${codeInsee}&page=1&page_size=${SIS_PAGE_SIZE}`;
+    // v1.2.0 — L'endpoint `/sis` n'existe pas : il répondait par un corps vide,
+    // `res.json()` levait, et la fonction retombait sur `indisponible`. Le
+    // rapport annonçait donc « SIS — pas de réponse » sur TOUTES les communes de
+    // France, depuis toujours. Le garde-fou de nullabilité a rempli son office —
+    // rien de faux n'a été affirmé — mais le critère n'a jamais été mesuré.
+    //
+    // La ressource réelle est `/ssp`, et sa réponse n'est pas une liste : c'est
+    // un objet à quatre sections (`casias` = anciens sites industriels,
+    // `instructions` = dossiers en cours, `conclusions_sis` = les SIS arrêtés,
+    // `conclusions_sup`). Seule `conclusions_sis` porte les Secteurs
+    // d'Information sur les Sols au sens réglementaire, qui est ce que la fiche
+    // « sites pollués » doit montrer.
+    const url = `${GEORISQUES_API}/ssp?code_insee=${codeInsee}&page=1&page_size=${SIS_PAGE_SIZE}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return indisponible;
 
     const data = await res.json();
-    if (!data?.data?.length) return aucun;
+    const bloc = data?.conclusions_sis;
+    // Une section absente = réponse inexploitable. Une section présente avec
+    // `data: []` = la commune n'a réellement aucun SIS : c'est une information,
+    // pas un trou.
+    if (!bloc || !Array.isArray(bloc.data)) return indisponible;
+    if (bloc.data.length === 0) return aucun;
 
-    const sites = data.data.map((s: Record<string, unknown>) => ({
-      id: s.id_sis || s.numero || "",
-      nom: s.nom || s.libelle || "Site pollué",
-      adresse: s.adresse || "",
-      commune: s.commune || "",
-      superficie_m2: s.superficie ? Number(s.superficie) : null,
+    const sites = bloc.data.map((s: Record<string, unknown>) => ({
+      id: String(s.id_sis ?? s.identifiant_ssp ?? ""),
+      nom: String(s.nom ?? "") || "Site pollué",
+      adresse: String(s.adresse ?? ""),
+      commune: String(s.nom_commune ?? ""),
+      superficie_m2: s.superficie != null ? Math.round(Number(s.superficie)) : null,
     }));
 
     return {
@@ -857,15 +885,18 @@ async function fetchArgiles(lat: number, lon: number): Promise<ArgilesData> {
   const empty: ArgilesData = { niveau_alea: null, risk_level: 'inconnu', coverage: 'no_data' };
 
   try {
-    const url = `${GEORISQUES_API}/argiles?latlon=${lon},${lat}`;
+    // v1.2.0 — Deux erreurs cumulées : l'endpoint s'appelle `rga`
+    // (Retrait-Gonflement des Argiles), pas `argiles` ; et sa réponse est un
+    // objet plat `{ codeExposition, exposition }`, pas une enveloppe `{data:[…]}`.
+    // Le `data.data[0]` ne pouvait donc jamais aboutir : le critère argiles
+    // était compté « non mesuré » sur la France entière.
+    const url = `${GEORISQUES_API}/rga?latlon=${lon},${lat}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return empty;
 
     const data = await res.json();
-    if (!data?.data?.length) return empty;
-
-    const argile = data.data[0];
-    const niveau = argile.niveau_alea || argile.exposition;
+    const niveau = data?.exposition ?? null;
+    if (!niveau) return empty;
 
     let riskLevel: RiskLevel = 'inconnu';
     if (niveau?.toLowerCase().includes('fort')) riskLevel = 'fort';
