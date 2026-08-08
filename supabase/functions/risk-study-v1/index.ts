@@ -1,6 +1,25 @@
 // ============================================================================
-// RISK STUDY V1 - VERSION 1.1.1
+// RISK STUDY V1 - VERSION 1.2.0
 // ============================================================================
+// CHANGEMENTS v1.2.0 — le filtre géographique n'était pas appliqué :
+// - `installations_classees`, `cavites` et `mvt` étaient interrogées avec un
+//   paramètre `bbox` qui N'EXISTE PAS sur l'API Géorisques. Accepté sans erreur,
+//   ignoré, la requête renvoyait la base NATIONALE : 137 940 installations pour
+//   une étude « Ascain, rayon 5 km », dont les cent premières du fichier, à 200
+//   puis 700 km. Le vrai filtre est `latlon` + `rayon` (19 installations).
+// - Les champs étaient lus en snake_case (`nom_ets`, `adresse`, `seveso`,
+//   `lib_activite`) alors que l'API renvoie du camelCase (`raisonSociale`,
+//   `adresse1`, `statutSeveso`). Toutes les lectures tombaient sur leur valeur
+//   de repli : chaque site s'appelait « Installation », sans activité.
+// - Conséquence la plus grave : `seveso_haut_count` et `seveso_bas_count` étaient
+//   calculés sur un champ inexistant, donc TOUJOURS 0. Le rapport affirmait
+//   « aucun site SEVESO » avec `coverage: 'ok'`, c'est-à-dire comme un fait
+//   mesuré. Le garde-fou « une source muette n'est pas une absence de risque »
+//   ne couvrait pas ce cas : la source répondait, mais à une autre question.
+// - `cavites.type` lisait `type_cavite`/`origine`, inexistants : toutes les
+//   cavités étaient « Inconnue ». Le champ réel est `type`.
+// MARQUEUR DE VERSION : présence de `georisquesUrl`
+//
 // CHANGEMENTS v1.1.1 — le trou laissé par v1.1.0 :
 // - v1.1.0 corrigeait l'AGRÉGATION mais pas ce que les SOURCES déclarent.
 //   `fetchIcpe`, `fetchSis`, `fetchCavites`, `fetchMouvementsTerrain`
@@ -77,8 +96,37 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 // TYPES & CONSTANTS
 // ============================================================================
 
-const VERSION = "1.1.1";
+const VERSION = "1.2.0";
 const GEORISQUES_API = "https://www.georisques.gouv.fr/api/v1";
+
+/**
+ * v1.2.0 — FILTRE GÉOGRAPHIQUE DES COUCHES GÉORISQUES
+ *
+ * Les couches installations_classees / cavites / mvt étaient interrogées avec un
+ * paramètre `bbox` construit à la main. Ce paramètre N'EXISTE PAS sur cette API :
+ * Géorisques l'accepte sans erreur, l'ignore, et renvoie la base nationale.
+ * Une requête « Ascain, rayon 5 km » retournait `results: 137940` puis les cent
+ * premières installations de France dans l'ordre du fichier — Orléans, Gauriaguet,
+ * Jassans-Riottier — à 200 puis 700 km du point demandé.
+ *
+ * Le silence de l'API est le piège : rien ne signalait l'erreur. Le décompte
+ * paraissait plausible (100, soit le plafond de pagination), la réponse était
+ * HTTP 200, et `coverage` valait donc 'ok'. Le garde-fou « une source muette
+ * n'est pas une absence de risque » ne protège de rien ici : la source n'était
+ * pas muette, elle répondait à une autre question que celle posée.
+ *
+ * Le filtre réel est `latlon` (en LON,LAT) + `rayon` en mètres. Vérifié sur
+ * Ascain : 19 installations dans 5 km au lieu de 137 940.
+ */
+const georisquesUrl = (
+  endpoint: string,
+  lat: number,
+  lon: number,
+  radiusKm: number,
+  pageSize: number,
+): string =>
+  `${GEORISQUES_API}/${endpoint}?latlon=${lon},${lat}&rayon=${Math.round(radiusKm * 1000)}`
+  + `&page=1&page_size=${pageSize}`;
 const GEO_API_BASE = "https://geo.api.gouv.fr";
 const BAN_API_URL = "https://api-adresse.data.gouv.fr";
 
@@ -497,9 +545,7 @@ async function fetchIcpe(lat: number, lon: number, radiusKm: number = 5): Promis
   };
 
   try {
-    const delta = radiusKm / 111;
-    const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
-    const url = `${GEORISQUES_API}/installations_classees?bbox=${bbox}&page=1&page_size=${ICPE_PAGE_SIZE}`;
+    const url = georisquesUrl("installations_classees", lat, lon, radiusKm, ICPE_PAGE_SIZE);
 
     const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
     if (!res.ok) return indisponible;
@@ -518,15 +564,36 @@ async function fetchIcpe(lat: number, lon: number, radiusKm: number = 5): Promis
         const a = Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180) * Math.cos(iLat*Math.PI/180) * Math.sin(dLon/2)**2;
         distance_m = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
       }
+
+      // v1.2.0 — Remappage sur les vrais noms de champs. Le code lisait du
+      // snake_case (`nom_ets`, `raison_sociale`, `adresse`, `seveso`,
+      // `lib_activite`) ; l'API renvoie du camelCase (`raisonSociale`,
+      // `adresse1`, `statutSeveso`) et ne porte aucun champ d'activité. Chaque
+      // lecture tombait donc sur sa valeur de repli : toutes les installations
+      // s'appelaient « Installation », sans activité ni statut SEVESO.
+      const adresse = [i.adresse1, i.adresse2, i.adresse3]
+        .filter(Boolean).join(" ").trim();
+
+      // L'activité n'existe pas comme champ : la seule description exploitable
+      // est la nature de la première rubrique de nomenclature déclarée.
+      const rubriques = Array.isArray(i.rubriques) ? i.rubriques as Array<Record<string, unknown>> : [];
+      const activite = String(rubriques[0]?.nature ?? "");
+
+      // `statutSeveso` vaut « Non Seveso » pour l'immense majorité des sites.
+      // Le conserver tel quel ferait passer chaque site ordinaire pour un site
+      // SEVESO auprès de tout code qui teste la simple présence du champ.
+      const statut = String(i.statutSeveso ?? "");
+      const seveso = statut && !/^non\s*seveso$/i.test(statut) ? statut : null;
+
       return {
-        nom: i.nom_ets || i.raison_sociale || "Installation",
-        raison_sociale: i.raison_sociale || "",
-        adresse: i.adresse || "",
-        commune: i.commune || "",
-        regime: i.regime || "",
-        seveso: i.seveso || null,
+        nom: String(i.raisonSociale ?? "") || "Installation sans raison sociale",
+        raison_sociale: String(i.raisonSociale ?? ""),
+        adresse,
+        commune: String(i.commune ?? ""),
+        regime: String(i.regime ?? ""),
+        seveso,
         distance_m,
-        activite: i.lib_activite || i.activite || "",
+        activite,
       };
     });
 
@@ -642,9 +709,7 @@ async function fetchCavites(lat: number, lon: number, radiusKm: number = 3): Pro
   const aucune: CaviteData = { count: 0, cavites: [], risk_level: 'nul', coverage: 'ok' };
 
   try {
-    const delta = radiusKm / 111;
-    const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
-    const url = `${GEORISQUES_API}/cavites?bbox=${bbox}&page=1&page_size=${CAVITES_PAGE_SIZE}`;
+    const url = georisquesUrl("cavites", lat, lon, radiusKm, CAVITES_PAGE_SIZE);
 
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return indisponible;
@@ -663,11 +728,14 @@ async function fetchCavites(lat: number, lon: number, radiusKm: number = 3): Pro
         const a = Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180) * Math.cos(cLat*Math.PI/180) * Math.sin(dLon/2)**2;
         distance_m = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
       }
+      // v1.2.0 — Le champ réel est `type` (« carrière », « ouvrage civil »… ).
+      // `type_cavite` et `origine` n'existent pas : toutes les cavités étaient
+      // étiquetées « Inconnue ». L'API ne renvoie pas de profondeur.
       return {
-        id: c.id_cavite || c.identifiant || "",
-        type: c.type_cavite || c.origine || "Inconnue",
-        nom: c.nom || "",
-        profondeur_m: c.profondeur ? Number(c.profondeur) : null,
+        id: String(c.identifiant ?? c.id_cavite ?? ""),
+        type: String(c.type ?? "") || "Type non renseigné",
+        nom: String(c.nom ?? ""),
+        profondeur_m: c.profondeur != null ? Number(c.profondeur) : null,
         distance_m,
       };
     });
@@ -723,9 +791,7 @@ async function fetchMouvementsTerrain(lat: number, lon: number, radiusKm: number
   const aucun: MvtData = { count: 0, mouvements: [], risk_level: 'nul', coverage: 'ok' };
 
   try {
-    const delta = radiusKm / 111;
-    const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
-    const url = `${GEORISQUES_API}/mvt?bbox=${bbox}&page=1&page_size=${MVT_PAGE_SIZE}`;
+    const url = georisquesUrl("mvt", lat, lon, radiusKm, MVT_PAGE_SIZE);
 
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return indisponible;
