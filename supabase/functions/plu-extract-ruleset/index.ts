@@ -5,6 +5,111 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GARDE D'ACCÈS (audit du 21/10/2026) — bloc autonome, recopié tel quel dans
+// chaque fonction appelant un modèle d'IA (déploiement par copier-coller).
+//
+//  · Authentification : JWT d'un utilisateur Supabase vérifié auprès de GoTrue
+//    (/auth/v1/user, l'équivalent de supabase.auth.getUser(token)), OU clé de
+//    service (SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEYS) pour les appels
+//    serveur-à-serveur. La clé anon seule ne suffit plus : sans cela,
+//    n'importe qui pouvait consommer le crédit OpenAI avec la clé publique.
+//  · CORS : origine renvoyée seulement si elle figure dans
+//    MIMMOZA_ALLOWED_ORIGINS (séparées par des virgules), à défaut dans la
+//    liste ci-dessous. Une origine inconnue reçoit un 403.
+// ─────────────────────────────────────────────────────────────────────────────
+const GARDE_ORIGINES_PAR_DEFAUT = [
+  "https://mimmoza.vercel.app",
+  "https://mimmoza.fr",
+  "https://www.mimmoza.fr",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+
+function gardeOrigines(): string[] {
+  const env = Deno.env.get("MIMMOZA_ALLOWED_ORIGINS");
+  const liste = env ? env.split(/[\s,]+/).map((o) => o.trim().replace(/\/$/, "")).filter(Boolean) : [];
+  return liste.length ? liste : GARDE_ORIGINES_PAR_DEFAUT;
+}
+
+function gardeClesJson(brut: string | undefined): string[] {
+  if (!brut) return [];
+  try {
+    const v = JSON.parse(brut);
+    if (typeof v === "string") return [v];
+    if (Array.isArray(v)) return v.filter((x) => typeof x === "string");
+    if (v && typeof v === "object") return Object.values(v).filter((x): x is string => typeof x === "string");
+  } catch {
+    return [brut];
+  }
+  return [];
+}
+
+function gardeEnTetesCors(origine: string | null): Record<string, string> {
+  const h: Record<string, string> = {
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-requested-with",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Vary": "Origin",
+  };
+  if (origine && gardeOrigines().includes(origine)) h["Access-Control-Allow-Origin"] = origine;
+  return h;
+}
+
+async function gardeAppelantAutorise(req: Request): Promise<boolean> {
+  const jeton = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!jeton) return false;
+
+  // Appel serveur-à-serveur avec la clé de service.
+  const clesService = [
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+    ...gardeClesJson(Deno.env.get("SUPABASE_SECRET_KEYS")),
+  ].filter(Boolean);
+  if (clesService.includes(jeton)) return true;
+
+  // JWT utilisateur : validé par GoTrue (refuse la clé anon, sans « sub »).
+  const url = Deno.env.get("SUPABASE_URL");
+  const clePublique =
+    gardeClesJson(Deno.env.get("SUPABASE_PUBLISHABLE_KEYS"))[0] ?? Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  if (!url || !clePublique) return false;
+  try {
+    const r = await fetch(`${url}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${jeton}`, apikey: clePublique },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return false;
+    const u = await r.json().catch(() => null);
+    return Boolean(u && typeof u.id === "string");
+  } catch {
+    return false;
+  }
+}
+
+/** Enveloppe le gestionnaire : CORS restreint + authentification obligatoire. */
+function avecGarde(gestionnaire: (req: Request) => Response | Promise<Response>) {
+  return async (req: Request): Promise<Response> => {
+    const origine = req.headers.get("Origin");
+    const cors = gardeEnTetesCors(origine);
+    const json = (corps: unknown, statut: number) =>
+      new Response(JSON.stringify(corps), { status: statut, headers: { ...cors, "Content-Type": "application/json" } });
+
+    if (origine && !cors["Access-Control-Allow-Origin"]) {
+      return json({ success: false, error: "ORIGIN_NOT_ALLOWED" }, 403);
+    }
+    if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+    if (!(await gardeAppelantAutorise(req))) {
+      return json({ success: false, error: "UNAUTHORIZED", message: "Authentification requise." }, 401);
+    }
+
+    const reponse = await gestionnaire(req);
+    // Remplace le « * » historique du gestionnaire par l'origine vérifiée.
+    const entetes = new Headers(reponse.headers);
+    entetes.delete("Access-Control-Allow-Origin");
+    for (const [k, v] of Object.entries(cors)) entetes.set(k, v);
+    return new Response(reponse.body, { status: reponse.status, statusText: reponse.statusText, headers: entetes });
+  };
+}
+// ── fin de la garde d'accès ─────────────────────────────────────────────────
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
@@ -306,7 +411,7 @@ async function callOpenAI(input: PluExtractInput): Promise<JsonValue> {
   }
 }
 
-serve(async (req) => {
+serve(avecGarde(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -418,4 +523,4 @@ serve(async (req) => {
       500,
     );
   }
-});
+}));
